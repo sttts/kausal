@@ -1,4 +1,4 @@
-# Kausal
+# Kausality
 
 A system for tracing and gating spec changes through a hierarchy of KRM objects and downstream systems (e.g., Terraform). Controllers cannot mutate downstream unless explicitly allowed.
 
@@ -34,7 +34,7 @@ Allowances are stored in annotations to remain controller-agnostic:
 kind: Deployment
 metadata:
   annotations:
-    kausal.io/allowances: |
+    kausality.io/allowances: |
       - kind: ReplicaSet           # child kind the controller may mutate
         mutation: spec.replicas    # field the controller may change on child
         generation: 7              # generation of this object that caused it
@@ -52,7 +52,7 @@ Propagated to child (ReplicaSet allows Pod mutations):
 kind: ReplicaSet
 metadata:
   annotations:
-    kausal.io/allowances: |
+    kausality.io/allowances: |
       - kind: Pod                  # child kind the controller may mutate
         mutation: delete           # operation permitted on child
         generation: 14             # generation of this object that caused it
@@ -88,7 +88,7 @@ Traces can capture external references as proof:
 kind: Deployment
 metadata:
   annotations:
-    kausal.io/allowances: |
+    kausality.io/allowances: |
       - kind: ReplicaSet
         mutation: spec.replicas
         generation: 7
@@ -135,7 +135,7 @@ This leverages existing controller behavior — no changes required to controlle
 
 ```yaml
 kind: AllowancePolicy
-apiVersion: kausal.io/v1alpha1
+apiVersion: kausality.io/v1alpha1
 metadata:
   name: deployment-to-replicaset
 spec:
@@ -257,7 +257,7 @@ Claim (namespaced)
             → External API (AWS, GCP, Terraform)
 ```
 
-Each level connected by ownerRefs. Kausal traces and gates mutations through this chain.
+Each level connected by ownerRefs. Kausality traces and gates mutations through this chain.
 
 ### External Relation
 
@@ -285,14 +285,14 @@ The `mutations` vocabulary for External is system-specific:
 
 ### Gating via managementPolicies
 
-Crossplane providers respect `spec.managementPolicies` on Managed Resources. Kausal uses this to gate external mutations without modifying providers.
+Crossplane providers respect `spec.managementPolicies` on Managed Resources. Kausality uses this to gate external mutations without modifying providers.
 
 **Default state** — MRs are read-only:
 ```yaml
 kind: RDSInstance
 metadata:
   annotations:
-    kausal.io/allowances: |
+    kausality.io/allowances: |
       []  # no allowances
 spec:
   managementPolicies: ["Observe", "LateInitialize"]  # provider won't mutate
@@ -305,7 +305,7 @@ spec:
 kind: RDSInstance
 metadata:
   annotations:
-    kausal.io/allowances: |
+    kausality.io/allowances: |
       - relation: External
         mutations: ["Update"]
         generation: 8
@@ -331,13 +331,13 @@ spec:
 
 Provider sees `Update` in managementPolicies, performs the AWS API call.
 
-### Kausal Controller
+### Kausality Controller
 
 A controller watches MRs and closes the gate as soon as the mutation is applied:
 
 ```
 +--------------------------------------------------+
-| Kausal Controller (watches MRs)                  |
+| Kausality Controller (watches MRs)                  |
 |                                                  |
 | On reconcile:                                    |
 | - If status.observedGeneration >= allowance.gen  |
@@ -394,7 +394,7 @@ Provider updates status.observedGeneration
          |
          v
 +-----------------------------------------------+
-| Kausal Controller                             |
+| Kausality Controller                             |
 | - Sees observedGeneration caught up           |
 | - Reverts managementPolicies to read-only     |
 | - Prunes consumed allowances                  |
@@ -405,7 +405,7 @@ Provider updates status.observedGeneration
 
 ```yaml
 kind: AllowancePolicy
-apiVersion: kausal.io/v1alpha1
+apiVersion: kausality.io/v1alpha1
 metadata:
   name: database-claim-to-xr
 spec:
@@ -426,7 +426,7 @@ spec:
     mutations: ["spec.size", "spec.engine"]
 ---
 kind: AllowancePolicy
-apiVersion: kausal.io/v1alpha1
+apiVersion: kausality.io/v1alpha1
 metadata:
   name: xdatabase-to-rds
 spec:
@@ -445,7 +445,7 @@ spec:
     mutations: ["Update"]
 ---
 kind: AllowancePolicy
-apiVersion: kausal.io/v1alpha1
+apiVersion: kausality.io/v1alpha1
 metadata:
   name: xdatabase-to-rds-destructive
 spec:

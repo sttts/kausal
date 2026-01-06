@@ -1,8 +1,8 @@
-# Kausal
+# Kausality
 
 **Every mutation needs a cause.**
 
-Kausal traces and gates spec changes through Kubernetes object hierarchies. Controllers cannot mutate downstream resources unless explicitly allowed.
+Kausality traces and gates spec changes through Kubernetes object hierarchies. Controllers cannot mutate downstream resources unless explicitly allowed.
 
 ## Goals
 
