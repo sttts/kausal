@@ -1,4 +1,4 @@
-# KRM Change Attestation
+# Kausal
 
 A system for tracing and gating spec changes through a hierarchy of KRM objects and downstream systems (e.g., Terraform). Controllers cannot mutate downstream unless explicitly allowed.
 
@@ -34,7 +34,7 @@ Allowances are stored in annotations to remain controller-agnostic:
 kind: Deployment
 metadata:
   annotations:
-    attestation.example.com/allowances: |
+    kausal.io/allowances: |
       - kind: ReplicaSet           # child kind the controller may mutate
         mutation: spec.replicas    # field the controller may change on child
         generation: 7              # generation of this object that caused it
@@ -52,7 +52,7 @@ Propagated to child (ReplicaSet allows Pod mutations):
 kind: ReplicaSet
 metadata:
   annotations:
-    attestation.example.com/allowances: |
+    kausal.io/allowances: |
       - kind: Pod                  # child kind the controller may mutate
         mutation: delete           # operation permitted on child
         generation: 14             # generation of this object that caused it
@@ -88,7 +88,7 @@ Traces can capture external references as proof:
 kind: Deployment
 metadata:
   annotations:
-    attestation.example.com/allowances: |
+    kausal.io/allowances: |
       - kind: ReplicaSet
         mutation: spec.replicas
         generation: 7
@@ -135,7 +135,7 @@ This leverages existing controller behavior — no changes required to controlle
 
 ```yaml
 kind: AllowancePolicy
-apiVersion: attestation.example.com/v1alpha1
+apiVersion: kausal.io/v1alpha1
 metadata:
   name: deployment-to-replicaset
 spec:
