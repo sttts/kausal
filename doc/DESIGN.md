@@ -261,48 +261,50 @@ The signal for "ready at least once" could be:
 - A condition like `Ready=True` having been observed
 - A dedicated annotation `kausality.io/initialized: "true"` set by the Kausality controller
 
-## Controller and API Upgrades
+## Controller, Composition, and Function Upgrades
 
-When controllers or APIs are upgraded, reconciliation may need to touch all objects (new defaults, schema migrations, etc.). This requires a mechanism to grant temporary broad allowances.
+When controllers, Crossplane Compositions, Functions, or other "logic" changes, reconciliation may produce different outputs for all affected objects. This requires a mechanism to grant temporary broad allowances.
 
 ### UpgradeAllowance
+
+A time-bounded window during which a ServiceAccount may perform specified mutations without needing parent allowances:
 
 ```yaml
 kind: UpgradeAllowance
 apiVersion: kausality.io/v1alpha1
 metadata:
-  name: deployment-controller-v1.2.3
+  name: crossplane-upgrade-2024-01-06
 spec:
-  serviceAccount: system:serviceaccount:kube-system:deployment-controller
-  validUntil: "2024-01-10T00:00:00Z"  # safety net
+  serviceAccount: system:serviceaccount:crossplane-system:crossplane
+  validFrom: "2024-01-06T15:00:00Z"
+  validUntil: "2024-01-06T18:00:00Z"
+  allow:
+  - kind: RDSInstance
+    relation: Child
+    mutations: ["spec.forProvider"]
+  - relation: External
+    mutations: ["Update"]
 ```
 
 When admission processes a mutation:
-1. Finds UpgradeAllowance(s) for the requesting ServiceAccount
-2. Checks object annotation: `kausality.io/last-upgrade`
-3. If annotation missing or references older UpgradeAllowance → grants broad allowance, sets annotation
-4. If annotation matches current UpgradeAllowance → normal rules apply (already upgraded)
+1. Check if current time is within `[validFrom, validUntil]`
+2. Check if requesting user matches `serviceAccount`
+3. Check if mutation matches an entry in `allow`
+4. If all match: grant allowance (bypass normal parent-based AllowancePolicy checks)
 
-```yaml
-# On object after upgrade
-metadata:
-  annotations:
-    kausality.io/last-upgrade: "deployment-controller-v1.2.3"
-```
+Scoped by time, identity, and mutation type — not a blanket "do anything".
 
-Each object gets upgraded exactly once per UpgradeAllowance. The annotation tracks which upgrade has been applied.
+### Open Questions
 
-### Open Question: Activation Timing
+#### Activation Timing
 
-**Problem**: The UpgradeAllowance must become active only when the new controller is actually running. Otherwise:
-- If activated before deployment: old controller might consume the upgrade allowance
-- If activated after deployment: new controller is blocked until activation
+**Problem**: The UpgradeAllowance should ideally become active only when the new controller is actually running. With time-bounding (`validFrom`), the old controller might still be running at window start.
 
 Both old and new controller use the same ServiceAccount, so admission cannot distinguish them.
 
-**Options considered:**
+**Alternative approaches considered:**
 
-**A. Explicit activation**
+**A. Explicit activation flag**
 ```yaml
 spec:
   active: false  # flip manually after deployment verified
@@ -310,16 +312,7 @@ spec:
 - Pro: Simple, explicit
 - Con: Window where new controller is blocked waiting for activation
 
-**B. Time window**
-```yaml
-spec:
-  validFrom: "2024-01-06T15:05:00Z"
-  validUntil: "2024-01-10T00:00:00Z"
-```
-- Pro: Can be created ahead of time
-- Con: Requires estimating deployment time; old controller might be running at validFrom
-
-**C. Reference controller Deployment generation**
+**B. Reference controller Deployment generation**
 ```yaml
 spec:
   controllerRef:
@@ -331,7 +324,7 @@ spec:
 - Pro: Tied to actual deployment
 - Con: Deployment generation doesn't indicate pods are actually running
 
-**D. Pod-based activation**
+**C. Pod-based activation**
 ```yaml
 spec:
   activateWhen:
@@ -346,7 +339,7 @@ status:
 - Pro: Activates exactly when new pod is ready
 - Con: Brief overlap during rollout where both old and new pods run; complexity
 
-**E. Different ServiceAccount per version**
+**D. Different ServiceAccount per version**
 - Pro: Clean separation
 - Con: Operationally complex, requires SA rotation on every upgrade
 
@@ -355,7 +348,34 @@ status:
 Possible mitigations for the overlap window:
 - Accept that old controller might reconcile during brief overlap (changes should be idempotent)
 - Use rollout strategies that minimize overlap (Recreate instead of RollingUpdate)
-- Controller-specific ServiceAccounts (option E) for critical controllers
+- Controller-specific ServiceAccounts (option D) for critical controllers
+
+#### Per-Object vs Per-Window
+
+The time-window approach allows mutations to any object (of the specified kinds) during the window.
+
+**More precise approaches:**
+
+**Per-object tracking**
+```yaml
+# On object after upgrade
+metadata:
+  annotations:
+    kausality.io/last-upgrade: "crossplane-upgrade-2024-01-06"
+```
+- Each object records which UpgradeAllowance was applied
+- Ensures "upgrade each object exactly once"
+- Adds state management complexity
+
+**Selectors**
+```yaml
+spec:
+  selector:
+    matchLabels:
+      crossplane.io/composition-name: xdatabase-composition
+```
+- Limit UpgradeAllowance to objects matching labels
+- Assumes right labels exist; not always the case
 
 ## Crossplane Integration
 
