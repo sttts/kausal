@@ -245,3 +245,223 @@ Controller mutates ReplicaSet
   - Policy matches with a `mayInitiate` subject
 - User identity comes from Kubernetes authentication (not self-declared)
 - Default-deny: without a matching allowance, controllers cannot mutate downstream
+
+## Crossplane Integration
+
+Crossplane manages external resources (cloud infrastructure) through a hierarchy:
+
+```
+Claim (namespaced)
+    → Composite Resource (XR, cluster-scoped)
+        → Managed Resources (MRs)
+            → External API (AWS, GCP, Terraform)
+```
+
+Each level connected by ownerRefs. Kausal traces and gates mutations through this chain.
+
+### External Relation
+
+For non-KRM resources, use `relation: External`:
+
+```yaml
+allow:
+# KRM mutations (what the controller may change on child MRs)
+- kind: RDSInstance
+  relation: Child
+  mutations: ["spec.forProvider.instanceClass"]
+
+# External mutations (what the provider may do to cloud resources)
+- relation: External
+  mutations: ["Update"]
+```
+
+The `mutations` vocabulary for External is system-specific:
+
+| System | Mutations |
+|--------|-----------|
+| Crossplane | `Create`, `Update`, `Delete` (managementPolicies verbs) |
+| Terraform | `apply`, `destroy` |
+| ArgoCD | `sync`, `delete` |
+
+### Gating via managementPolicies
+
+Crossplane providers respect `spec.managementPolicies` on Managed Resources. Kausal uses this to gate external mutations without modifying providers.
+
+**Default state** — MRs are read-only:
+```yaml
+kind: RDSInstance
+metadata:
+  annotations:
+    kausal.io/allowances: |
+      []  # no allowances
+spec:
+  managementPolicies: ["Observe", "LateInitialize"]  # provider won't mutate
+  forProvider:
+    instanceClass: db.t3.medium
+```
+
+**When allowance arrives** — admission opens the gate:
+```yaml
+kind: RDSInstance
+metadata:
+  annotations:
+    kausal.io/allowances: |
+      - relation: External
+        mutations: ["Update"]
+        generation: 8
+        initiator: hans@example.com
+        trace:
+        - kind: DatabaseClaim
+          name: my-database
+          generation: 5
+          field: spec.size
+        - kind: XDatabase
+          name: my-database-xyz
+          generation: 12
+          field: spec.instanceClass
+        - kind: RDSInstance
+          name: my-database-xyz-rds
+          generation: 8
+          field: spec.forProvider.instanceClass
+spec:
+  managementPolicies: ["Observe", "LateInitialize", "Update"]  # gate open
+  forProvider:
+    instanceClass: db.t3.large  # changed
+```
+
+Provider sees `Update` in managementPolicies, performs the AWS API call.
+
+### Kausal Controller
+
+A controller watches MRs and closes the gate as soon as the mutation is applied:
+
+```
++--------------------------------------------------+
+| Kausal Controller (watches MRs)                  |
+|                                                  |
+| On reconcile:                                    |
+| - If status.observedGeneration >= allowance.gen  |
+|   AND managementPolicies contains mutation verbs |
+|   → Patch spec.managementPolicies to read-only   |
+|   → Prune consumed allowances                    |
++--------------------------------------------------+
+```
+
+This ensures the gate is open only for the duration of the mutation, not longer.
+
+### Crossplane Admission Flow
+
+```
+User changes Claim.spec.size: "large"
+         |
+         v
++-----------------------------------------------+
+| Admission (on Claim)                          |
+| - Evaluates AllowancePolicies                 |
+| - Injects allowances for XR mutations         |
++-----------------------------------------------+
+         |
+         v
+Crossplane claim-controller updates XR.spec
+         |
+         v
++-----------------------------------------------+
+| Admission (on XR)                             |
+| - Checks Claim has allowance                  |
+| - Injects allowances for MR mutations         |
+| - Includes relation: External allowances      |
++-----------------------------------------------+
+         |
+         v
+Composition controller updates MR.spec
+         |
+         v
++-----------------------------------------------+
+| Admission (on MR)                             |
+| - Checks XR has allowance                     |
+| - Sets managementPolicies based on External   |
+|   allowance mutations (e.g., adds "Update")   |
++-----------------------------------------------+
+         |
+         v
+Provider sees managementPolicies: [..., "Update"]
+         |
+         v
+Provider calls AWS API
+         |
+         v
+Provider updates status.observedGeneration
+         |
+         v
++-----------------------------------------------+
+| Kausal Controller                             |
+| - Sees observedGeneration caught up           |
+| - Reverts managementPolicies to read-only     |
+| - Prunes consumed allowances                  |
++-----------------------------------------------+
+```
+
+### Example AllowancePolicy for Crossplane
+
+```yaml
+kind: AllowancePolicy
+apiVersion: kausal.io/v1alpha1
+metadata:
+  name: database-claim-to-xr
+spec:
+  match:
+    kind: DatabaseClaim
+    fields: ["spec.size", "spec.engine"]
+    cel:
+    - "has(object.metadata.annotations['jira'])"
+    capture:
+    - "metadata.annotations[jira]"
+  subjects:
+  - kind: Group
+    name: platform-team
+    mayInitiate: true
+  allow:
+  - kind: XDatabase
+    relation: Child
+    mutations: ["spec.size", "spec.engine"]
+---
+kind: AllowancePolicy
+apiVersion: kausal.io/v1alpha1
+metadata:
+  name: xdatabase-to-rds
+spec:
+  match:
+    kind: XDatabase
+    fields: ["spec.size"]
+  subjects:
+  - kind: ServiceAccount
+    name: crossplane
+    namespace: crossplane-system
+  allow:
+  - kind: RDSInstance
+    relation: Child
+    mutations: ["spec.forProvider.instanceClass"]
+  - relation: External
+    mutations: ["Update"]
+---
+kind: AllowancePolicy
+apiVersion: kausal.io/v1alpha1
+metadata:
+  name: xdatabase-to-rds-destructive
+spec:
+  match:
+    kind: XDatabase
+    fields: ["spec.engine"]  # changing engine requires recreate
+    cel:
+    - "object.metadata.annotations['allow-recreate'] == 'true'"
+  subjects:
+  - kind: ServiceAccount
+    name: crossplane
+    namespace: crossplane-system
+  allow:
+  - kind: RDSInstance
+    relation: Child
+    mutations: ["spec.forProvider.engine"]
+  - relation: External
+    mutations: ["Delete", "Create"]  # destructive
+```
