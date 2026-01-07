@@ -662,3 +662,145 @@ spec:
       mutations:
       - verbs: [Delete, Create]  # destructive
 ```
+
+## Kro Integration
+
+[Kro](https://github.com/kubernetes-sigs/kro) (Kube Resource Orchestrator) defines resource DAGs via ResourceGraphDefinitions. The dependency graph can be used to automatically derive AllowancePolicies.
+
+### ResourceGraphDefinition Example
+
+```yaml
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: webapp
+spec:
+  schema:
+    apiVersion: example.com/v1alpha1
+    kind: WebApp
+    spec:
+      name: string
+      image: string
+      replicas: integer
+
+  resources:
+  - id: deployment
+    template:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ${schema.spec.name}
+      spec:
+        replicas: ${schema.spec.replicas}
+        template:
+          spec:
+            containers:
+            - name: app
+              image: ${schema.spec.image}
+
+  - id: service
+    template:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: ${schema.spec.name}
+      spec:
+        selector:
+          app: ${deployment.metadata.labels.app}  # depends on deployment
+```
+
+### Deriving AllowancePolicy from DAG
+
+The `${...}` references create explicit edges in the dependency graph:
+
+| Schema Field | References | Resource Field |
+|--------------|------------|----------------|
+| `schema.spec.name` | → | `deployment.metadata.name` |
+| `schema.spec.replicas` | → | `deployment.spec.replicas` |
+| `schema.spec.image` | → | `deployment.spec.template.spec.containers[0].image` |
+| `deployment.metadata.labels.app` | → | `service.spec.selector.app` |
+
+From this, we can derive:
+
+```yaml
+kind: AllowancePolicy
+apiVersion: kausality.io/v1alpha1
+metadata:
+  name: webapp-policy
+  annotations:
+    kausality.io/derived-from: webapp  # source RGD
+spec:
+  target:
+    apiGroup: example.com
+    apiVersion: v1alpha1
+    kind: WebApp
+
+  subjects:
+  - kind: ServiceAccount
+    name: kro-controller
+    namespace: kro-system
+
+  rules:
+  - trigger: "spec.name"
+    allow:
+    - target:
+        apiGroup: apps
+        apiVersion: v1
+        kind: Deployment
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "metadata.name"
+        verbs: [Mutate]
+    - target:
+        apiGroup: ""
+        apiVersion: v1
+        kind: Service
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "metadata.name"
+        verbs: [Mutate]
+
+  - trigger: "spec.replicas"
+    allow:
+    - target:
+        apiGroup: apps
+        apiVersion: v1
+        kind: Deployment
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "spec.replicas"
+        verbs: [Mutate]
+
+  - trigger: "spec.image"
+    allow:
+    - target:
+        apiGroup: apps
+        apiVersion: v1
+        kind: Deployment
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "spec.template.spec.containers[*].image"
+        verbs: [Mutate]
+```
+
+### Derivation Algorithm
+
+1. Parse ResourceGraphDefinition
+2. For each `${schema.spec.X}` reference in a resource template:
+   - Extract the schema field path (`spec.X`)
+   - Extract the target resource and field path
+   - Create a rule: `trigger: spec.X` → `allow: [{target, jsonPath}]`
+3. For inter-resource references (`${resourceId.field}`):
+   - Track transitive dependencies
+   - Include in parent's allow list
+4. Set `subjects` to the Kro controller ServiceAccount
+5. Annotate with source RGD for traceability
+
+### Automation
+
+A Kro webhook or controller could:
+1. Watch ResourceGraphDefinitions
+2. Generate corresponding AllowancePolicies automatically
+3. Keep them in sync when RGDs change
+
+This eliminates manual policy authoring for Kro-managed resources.
