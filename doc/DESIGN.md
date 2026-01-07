@@ -137,16 +137,12 @@ This leverages existing controller behavior — no changes required to controlle
 kind: AllowancePolicy
 apiVersion: kausality.io/v1alpha1
 metadata:
-  name: deployment-to-replicaset
+  name: deployment-policy
 spec:
-  match:
+  target:
+    apiGroup: apps
+    apiVersion: v1
     kind: Deployment
-    fields:
-    - "spec.replicas"
-    - "spec.template.spec.containers[*].image"    # wildcards supported
-    cel:
-    - "has(object.spec.jiraTicket)"
-    - "object.metadata.labels['env'] != 'prod' || has(object.spec.jiraTicket)"
 
   subjects:
   - kind: Group
@@ -156,34 +152,53 @@ spec:
     name: deployment-controller
     namespace: kube-system
 
-  allow:
-  - kind: ReplicaSet
-    relation: Child
-    mutations: ["spec.replicas", "spec.template"]
+  rules:
+  - trigger: "spec.replicas"
+    allow:
+    - target:
+        apiGroup: apps
+        apiVersion: v1
+        kind: ReplicaSet
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "spec.replicas"
+        verbs: [Mutate]
+
+  - trigger: "spec.template.spec.containers[*].image"
+    conditions:
+    - "object.metadata.labels['env'] != 'prod'"
+    - "has(object.metadata.annotations['jira'])"
+    capture:
+    - "metadata.annotations[jira]"
+    - "metadata.annotations[approved-by]"
+    allow:
+    - target:
+        apiGroup: apps
+        apiVersion: v1
+        kind: ReplicaSet
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "spec.template.spec.containers[*]"
+        verbs: [Insert, Delete, Mutate]
+    - relation: External
+      mutations:
+      - verbs: [Update]
+      - verbs: [Delete, Create]
 ```
 
-### match
+### target
 
-Defines when this policy applies.
+The object kind this policy applies to, fully qualified:
 
 | Field | Description |
 |-------|-------------|
-| `kind` | Parent object kind |
-| `fields` | Spec fields that trigger this rule (supports `[*]` wildcards) |
-| `cel` | CEL expressions for additional conditions (optional) |
-| `capture` | Fields to capture in the trace as attestations (optional) |
-
-CEL expressions have access to `object` and `oldObject`. Use cases:
-- Require external references: `has(object.spec.jiraTicket)`
-- Pattern validation: `object.spec.jiraTicket.matches('^INFRA-[0-9]+$')`
-- Conditional requirements: `object.metadata.labels['env'] != 'prod' || has(object.spec.jiraTicket)`
-- Change direction: `object.spec.replicas > oldObject.spec.replicas`
-
-Wildcards in policy fields (e.g., `[*]`) match any index; traces record the actual index.
+| `apiGroup` | API group (e.g., `apps`, `crossplane.io`) |
+| `apiVersion` | API version (e.g., `v1`, `v1alpha1`) |
+| `kind` | Object kind |
 
 ### subjects
 
-Who may trigger this rule. Follows RBAC subject conventions.
+Who may trigger this policy. Follows RBAC subject conventions.
 
 | Field | Description |
 |-------|-------------|
@@ -194,15 +209,55 @@ Who may trigger this rule. Follows RBAC subject conventions.
 
 Subjects without `mayInitiate` can only propagate allowances that already exist on a parent object.
 
-### allow
+### rules
 
-List of permitted downstream mutations when the policy matches.
+List of trigger → allow mappings. Each rule defines what downstream mutations are permitted when a specific field changes.
 
 | Field | Description |
 |-------|-------------|
-| `kind` | Target child object kind |
-| `relation` | `Child` (via ownerRef) |
-| `mutations` | Permitted operations: field paths or `delete`, `create` |
+| `trigger` | JSON path of the field that triggers this rule (supports `[*]` wildcards) |
+| `conditions` | CEL expressions that must all pass (optional) |
+| `capture` | Fields to capture in the trace as attestations (optional) |
+| `allow` | List of permitted downstream mutations |
+
+CEL expressions have access to `object` and `oldObject`. Use cases:
+- Require external references: `has(object.metadata.annotations['jira'])`
+- Pattern validation: `object.metadata.annotations['jira'].matches('^INFRA-[0-9]+$')`
+- Conditional requirements: `object.metadata.labels['env'] != 'prod'`
+- Change direction: `object.spec.replicas > oldObject.spec.replicas`
+
+Wildcards in trigger paths (e.g., `[*]`) match any index; traces record the actual index.
+
+### allow
+
+Each entry in `allow` specifies a permitted downstream mutation:
+
+| Field | Description |
+|-------|-------------|
+| `target` | Target object GVK (optional for `External` relation) |
+| `relation` | `ControllerChild` (via ownerRef with `controller: true`) or `External` (non-KRM resources) |
+| `mutations` | List of permitted mutations |
+
+### mutations
+
+For KRM objects (`relation: ControllerChild`):
+
+| Field | Description |
+|-------|-------------|
+| `jsonPath` | Path to the field that may be mutated |
+| `verbs` | Permitted operations: `Insert`, `Delete`, `Mutate` |
+
+- `Insert` — add new items (arrays/maps)
+- `Delete` — remove items
+- `Mutate` — change existing values
+
+For external resources (`relation: External`):
+
+| Field | Description |
+|-------|-------------|
+| `verbs` | System-specific operations |
+
+Verbs are validated for `jsonPath` mutations (`Insert`, `Delete`, `Mutate` only) but can be any string for `External` mutations (e.g., Crossplane: `Create`, `Update`, `Delete`; Terraform: `apply`, `destroy`).
 
 ## Admission Flow
 
@@ -303,7 +358,7 @@ spec:
   serviceAccount: system:serviceaccount:crossplane-system:crossplane
   allow:
   - kind: RDSInstance
-    relation: Child
+    relation: ControllerChild
     mutations: ["spec.forProvider"]
   - relation: External
     mutations: ["Update"]
@@ -378,7 +433,7 @@ For non-KRM resources, use `relation: External`:
 allow:
 # KRM mutations (what the controller may change on child MRs)
 - kind: RDSInstance
-  relation: Child
+  relation: ControllerChild
   mutations: ["spec.forProvider.instanceClass"]
 
 # External mutations (what the provider may do to cloud resources)
@@ -518,61 +573,92 @@ Provider updates status.observedGeneration
 kind: AllowancePolicy
 apiVersion: kausality.io/v1alpha1
 metadata:
-  name: database-claim-to-xr
+  name: database-claim-policy
 spec:
-  match:
+  target:
+    apiGroup: example.com
+    apiVersion: v1alpha1
     kind: DatabaseClaim
-    fields: ["spec.size", "spec.engine"]
-    cel:
-    - "has(object.metadata.annotations['jira'])"
-    capture:
-    - "metadata.annotations[jira]"
+
   subjects:
   - kind: Group
     name: platform-team
     mayInitiate: true
-  allow:
-  - kind: XDatabase
-    relation: Child
-    mutations: ["spec.size", "spec.engine"]
+
+  rules:
+  - trigger: "spec.size"
+    conditions:
+    - "has(object.metadata.annotations['jira'])"
+    capture:
+    - "metadata.annotations[jira]"
+    allow:
+    - target:
+        apiGroup: example.com
+        apiVersion: v1alpha1
+        kind: XDatabase
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "spec.size"
+        verbs: [Mutate]
+
+  - trigger: "spec.engine"
+    conditions:
+    - "has(object.metadata.annotations['jira'])"
+    capture:
+    - "metadata.annotations[jira]"
+    allow:
+    - target:
+        apiGroup: example.com
+        apiVersion: v1alpha1
+        kind: XDatabase
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "spec.engine"
+        verbs: [Mutate]
 ---
 kind: AllowancePolicy
 apiVersion: kausality.io/v1alpha1
 metadata:
-  name: xdatabase-to-rds
+  name: xdatabase-policy
 spec:
-  match:
+  target:
+    apiGroup: example.com
+    apiVersion: v1alpha1
     kind: XDatabase
-    fields: ["spec.size"]
+
   subjects:
   - kind: ServiceAccount
     name: crossplane
     namespace: crossplane-system
-  allow:
-  - kind: RDSInstance
-    relation: Child
-    mutations: ["spec.forProvider.instanceClass"]
-  - relation: External
-    mutations: ["Update"]
----
-kind: AllowancePolicy
-apiVersion: kausality.io/v1alpha1
-metadata:
-  name: xdatabase-to-rds-destructive
-spec:
-  match:
-    kind: XDatabase
-    fields: ["spec.engine"]  # changing engine requires recreate
-    cel:
+
+  rules:
+  - trigger: "spec.size"
+    allow:
+    - target:
+        apiGroup: rds.aws.crossplane.io
+        apiVersion: v1alpha1
+        kind: RDSInstance
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "spec.forProvider.instanceClass"
+        verbs: [Mutate]
+    - relation: External
+      mutations:
+      - verbs: [Update]
+
+  - trigger: "spec.engine"
+    conditions:
     - "object.metadata.annotations['allow-recreate'] == 'true'"
-  subjects:
-  - kind: ServiceAccount
-    name: crossplane
-    namespace: crossplane-system
-  allow:
-  - kind: RDSInstance
-    relation: Child
-    mutations: ["spec.forProvider.engine"]
-  - relation: External
-    mutations: ["Delete", "Create"]  # destructive
+    allow:
+    - target:
+        apiGroup: rds.aws.crossplane.io
+        apiVersion: v1alpha1
+        kind: RDSInstance
+      relation: ControllerChild
+      mutations:
+      - jsonPath: "spec.forProvider.engine"
+        verbs: [Mutate]
+    - relation: External
+      mutations:
+      - verbs: [Delete, Create]  # destructive
 ```
