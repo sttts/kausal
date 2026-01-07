@@ -263,21 +263,44 @@ The signal for "ready at least once" could be:
 
 ## Controller, Composition, and Function Upgrades
 
-When controllers, Crossplane Compositions, Functions, or other "logic" changes, reconciliation may produce different outputs for all affected objects. This requires a mechanism to grant temporary broad allowances.
+When controllers, Crossplane Compositions, Functions, or other "logic" changes, reconciliation may produce different outputs for all affected objects. This requires a mechanism to grant upgrade allowances.
+
+### User-Agent Based Detection
+
+Kubernetes API requests include a User-Agent header with the format:
+```
+command/version (os/arch) kubernetes/commit
+```
+
+Example: `crossplane/v1.15.0 (linux/amd64) kubernetes/abc1234`
+
+Admission webhooks receive this header. By storing a hash of the user-agent on each object, we can detect when a new controller version is making requests.
+
+**Annotation on objects:**
+```yaml
+metadata:
+  annotations:
+    kausality.io/controller-ua-hash: "a1ef23b4"  # short hash of user-agent
+```
+
+**Detection flow:**
+1. Controller mutates object
+2. Admission computes hash of request's User-Agent
+3. Compares with `kausality.io/controller-ua-hash` annotation
+4. If different → upgrade detected → check UpgradeAllowance
+5. If same → normal allowance rules apply
 
 ### UpgradeAllowance
 
-A time-bounded window during which a ServiceAccount may perform specified mutations without needing parent allowances:
+Defines what mutations a ServiceAccount may perform when an upgrade is detected:
 
 ```yaml
 kind: UpgradeAllowance
 apiVersion: kausality.io/v1alpha1
 metadata:
-  name: crossplane-upgrade-2024-01-06
+  name: crossplane-upgrade
 spec:
   serviceAccount: system:serviceaccount:crossplane-system:crossplane
-  validFrom: "2024-01-06T15:00:00Z"
-  validUntil: "2024-01-06T18:00:00Z"
   allow:
   - kind: RDSInstance
     relation: Child
@@ -286,96 +309,53 @@ spec:
     mutations: ["Update"]
 ```
 
-When admission processes a mutation:
-1. Check if current time is within `[validFrom, validUntil]`
-2. Check if requesting user matches `serviceAccount`
-3. Check if mutation matches an entry in `allow`
-4. If all match: grant allowance (bypass normal parent-based AllowancePolicy checks)
+No `validFrom`/`validUntil` needed — activation is automatic based on user-agent change.
 
-Scoped by time, identity, and mutation type — not a blanket "do anything".
+**Admission flow:**
+1. Controller (new version) mutates object
+2. Admission sees user-agent hash differs from annotation
+3. Finds UpgradeAllowance for this ServiceAccount
+4. Checks if mutation matches an entry in `allow`
+5. If match: grant allowance, update `kausality.io/controller-ua-hash`
+6. If no match or no UpgradeAllowance: block or escalate
+
+**Benefits:**
+- No timing coordination — detection is based on actual requests
+- Old controller continues normally (same hash, no upgrade triggered)
+- New controller automatically detected on first request
+- Per-object: each object upgraded once per new binary
+- UpgradeAllowance can be created before OR after deployment
+
+### Workflow
+
+1. Create UpgradeAllowance for the ServiceAccount (can be done anytime)
+2. Deploy new controller version
+3. New controller reconciles objects
+4. Admission detects user-agent change, grants upgrade allowance
+5. Annotation updated, subsequent reconciles use normal rules
 
 ### Open Questions
 
-#### Activation Timing
+#### Composition and Function Changes
 
-**Problem**: The UpgradeAllowance should ideally become active only when the new controller is actually running. With time-bounding (`validFrom`), the old controller might still be running at window start.
+User-agent detection works for controller binary changes. But Crossplane Compositions and Functions can change independently of the controller binary.
 
-Both old and new controller use the same ServiceAccount, so admission cannot distinguish them.
+Options:
+- Treat Composition/Function changes as requiring explicit UpgradeAllowance with time window
+- Hash Composition content and store alongside controller hash
+- Accept that Composition changes are lower risk (they don't change external API calls directly)
 
-**Alternative approaches considered:**
+#### Hash Stability
 
-**A. Explicit activation flag**
-```yaml
-spec:
-  active: false  # flip manually after deployment verified
-```
-- Pro: Simple, explicit
-- Con: Window where new controller is blocked waiting for activation
+The user-agent includes:
+- Binary name (from `os.Args[0]`)
+- Version (build-time)
+- OS/arch
+- Git commit
 
-**B. Reference controller Deployment generation**
-```yaml
-spec:
-  controllerRef:
-    kind: Deployment
-    name: deployment-controller
-    namespace: kube-system
-    minGeneration: 15
-```
-- Pro: Tied to actual deployment
-- Con: Deployment generation doesn't indicate pods are actually running
-
-**C. Pod-based activation**
-```yaml
-spec:
-  activateWhen:
-    podSelector:
-      namespace: kube-system
-      labels:
-        app: deployment-controller
-    image: "registry.io/deployment-controller:v1.2.3"
-status:
-  active: false  # set by Kausality controller when pod is Ready
-```
-- Pro: Activates exactly when new pod is ready
-- Con: Brief overlap during rollout where both old and new pods run; complexity
-
-**D. Different ServiceAccount per version**
-- Pro: Clean separation
-- Con: Operationally complex, requires SA rotation on every upgrade
-
-**No perfect solution exists.** The fundamental problem is that admission cannot distinguish which version of a controller is making a request when they share a ServiceAccount.
-
-Possible mitigations for the overlap window:
-- Accept that old controller might reconcile during brief overlap (changes should be idempotent)
-- Use rollout strategies that minimize overlap (Recreate instead of RollingUpdate)
-- Controller-specific ServiceAccounts (option D) for critical controllers
-
-#### Per-Object vs Per-Window
-
-The time-window approach allows mutations to any object (of the specified kinds) during the window.
-
-**More precise approaches:**
-
-**Per-object tracking**
-```yaml
-# On object after upgrade
-metadata:
-  annotations:
-    kausality.io/last-upgrade: "crossplane-upgrade-2024-01-06"
-```
-- Each object records which UpgradeAllowance was applied
-- Ensures "upgrade each object exactly once"
-- Adds state management complexity
-
-**Selectors**
-```yaml
-spec:
-  selector:
-    matchLabels:
-      crossplane.io/composition-name: xdatabase-composition
-```
-- Limit UpgradeAllowance to objects matching labels
-- Assumes right labels exist; not always the case
+Some of these may change without semantic controller changes (e.g., rebuilding same version). Consider:
+- Hashing only the version portion
+- Allowing wildcard patterns in UpgradeAllowance to ignore patch versions
 
 ## Crossplane Integration
 
