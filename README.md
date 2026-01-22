@@ -27,5 +27,6 @@ Without an allowance, controllers cannot mutate downstream resources.
 
 ## Documentation
 
-See [doc/DESIGN.md](doc/DESIGN.md) for the full design.
+- [doc/DESIGN.md](doc/DESIGN.md) - Full design specification
+- [doc/DESIGN-SIMPLE.md](doc/DESIGN-SIMPLE.md) - Drift detection and escalation
 
