@@ -1,4 +1,4 @@
-// Package webhook provides a standalone webhook server for drift detection.
+// Package webhook provides a standalone webhook server for drift detection and tracing.
 package webhook
 
 import (
@@ -79,15 +79,15 @@ func NewServer(cfg Config) *Server {
 	}
 }
 
-// Register registers the drift detection handler with the webhook server.
+// Register registers the admission handler with the webhook server.
 func (s *Server) Register() {
 	handler := admission.NewHandler(admission.Config{
 		Client: s.config.Client,
 		Log:    s.log,
 	})
 
-	s.webhookServer.Register("/validate", &webhook.Admission{Handler: handler})
-	s.log.Info("registered drift detection webhook", "path", "/validate")
+	s.webhookServer.Register("/mutate", &webhook.Admission{Handler: handler})
+	s.log.Info("registered kausality webhook", "path", "/mutate")
 }
 
 // Start starts the webhook server and health server.
