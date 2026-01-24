@@ -76,6 +76,23 @@ Initialization is detected by checking (in order):
 2. `Ready=True` condition
 3. `status.observedGeneration` exists
 
+### Trace Labels
+
+Attach custom metadata to trace entries via `kausality.io/trace-*` annotations:
+
+```yaml
+metadata:
+  annotations:
+    kausality.io/trace-ticket: "JIRA-123"
+    kausality.io/trace-pr: "567"
+```
+
+These become labels in the trace hop, allowing correlation with external systems:
+
+```json
+{"kind": "Deployment", "name": "prod", "labels": {"ticket": "JIRA-123", "pr": "567"}, ...}
+```
+
 ## Installation
 
 ### Prerequisites
