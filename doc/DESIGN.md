@@ -184,24 +184,61 @@ spec:
 
 ### Request Tracing
 
+The trace is a JSON array stored in `kausality.io/trace`, recording the causal chain of mutations:
+
 ```yaml
-# Initialized by admission, propagated down
-kausality.io/request-trace: "ace-123,cluster-456,ekscluster-789"
+kausality.io/trace: |
+  [
+    {
+      "apiVersion": "example.com/v1alpha1",
+      "kind": "EKSCluster",
+      "name": "prod-cluster",
+      "generation": 5,
+      "user": "hans@example.com",
+      "timestamp": "2026-01-24T10:30:00Z"
+    },
+    {
+      "apiVersion": "example.com/v1alpha1",
+      "kind": "NodePool",
+      "name": "pool-1",
+      "generation": 12,
+      "user": "system:serviceaccount:infra:node-controller",
+      "timestamp": "2026-01-24T10:30:05Z"
+    }
+  ]
 ```
 
-- Auto-generated at admission if not present
-- **Replaced** when parent generation changes (new causal chain)
-- **Extended** with drift approval info when drift is corrected
+Each entry contains:
+- Resource reference (apiVersion, kind, name)
+- `generation` at mutation time
+- `user` from admission (human/CI at origin, service account for controllers)
+- `timestamp`
+
+Namespace is omitted — it's the same as the object carrying the trace (or cluster-scoped).
+
+#### Origin vs Controller Hop
+
+**Origin (new trace):**
+- No controller ownerReference, OR
+- Parent has `generation == observedGeneration` (no active reconciliation)
+- → Start new trace, this user is the initiator
+
+**Controller hop (extend trace):**
+- Has controller ownerReference with `controller: true` AND
+- Parent has `generation != observedGeneration` (parent is reconciling)
+- → Copy trace from parent, append new hop
+
+GitOps tools (ArgoCD, Flux) appear as **origins** since they apply manifests directly without `controller: true` ownerReferences. Kubernetes controllers (Deployment→ReplicaSet→Pod) appear as **hops**.
+
+#### Trace Lifecycle
+
+- **Created** when a mutation has no parent trace to extend
+- **Extended** when a controller propagates changes to children
+- **Replaced** when parent generation changes (new causal chain starts)
 
 #### Trace Metadata (Possible Extension)
 
-The trace format and additional metadata propagation (e.g., Jira issues, PR links, Slack threads) is intentionally left unspecified for now. Possible future extensions include:
-
-- Structured JSON trace format with origin, refs, and hop history
-- TraceConfig CRD defining which annotations to propagate
-- Convention-based propagation (e.g., `kausality.io/trace-*` annotations)
-
-This will be designed based on real-world usage patterns.
+Additional metadata propagation (e.g., Jira issues, PR links, Slack threads) is intentionally left unspecified for now. This will be designed based on real-world usage patterns.
 
 ### Slack Escalation
 
