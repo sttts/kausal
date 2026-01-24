@@ -180,7 +180,12 @@ func TestModeAnnotation_ObjectOverridesNamespace(t *testing.T) {
 	})
 
 	// Create a ReplicaSet with log mode annotation (overrides namespace's enforce)
+	// Note: No owner references - this is a standalone object, so no drift detection applies
 	rs := &appsv1.ReplicaSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "ReplicaSet",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rs-override",
 			Namespace: enforceNS.Name,
@@ -229,6 +234,10 @@ func TestModeAnnotation_ObjectOverridesNamespace(t *testing.T) {
 	// 1. Object has kausality.io/mode: log annotation
 	// 2. This overrides namespace's enforce mode
 	// 3. Even if drift is detected, log mode just warns
-	assert.True(t, resp.Allowed, "should be allowed in log mode (object annotation overrides namespace)")
-	t.Logf("Response: allowed=%v, warnings=%v", resp.Allowed, resp.Warnings)
+	// 4. More importantly: no owner refs = no drift detection
+	t.Logf("Response: allowed=%v, warnings=%v, result=%v", resp.Allowed, resp.Warnings, resp.Result)
+	if !resp.Allowed {
+		t.Logf("Denial reason: %v", resp.Result)
+	}
+	assert.True(t, resp.Allowed, "should be allowed - no owner refs means no drift, and object has log mode annotation")
 }
