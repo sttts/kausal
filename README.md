@@ -36,9 +36,11 @@ Kausality detects unexpected infrastructure changes (drift) in Kubernetes by mon
 - **Expected changes**: Triggered by spec changes (`generation != observedGeneration`)
 - **Unexpected changes**: Triggered by drift, external modifications, or software updates (`generation == observedGeneration`)
 
-**Phase 1 (current)**: Logging only — drift is detected and logged, but mutations are not blocked.
+The system supports two modes:
+- **Log mode** (default): Drift is detected and logged, warnings returned, but mutations are allowed
+- **Enforce mode**: Drift without approval is denied
 
-**Future phases** will add approval workflows, Slack integration, and policy-based exceptions.
+See [Configuration](#drift-detection-mode) for per-resource mode settings.
 
 ## How It Works
 
@@ -190,15 +192,27 @@ driftDetection:
       resources: ["deployments"]
       mode: enforce
 
-    # Enforce mode for all custom resources
-    - apiGroups: ["example.com"]
-      resources: ["*"]
+    # Enforce only in specific namespaces
+    - apiGroups: ["apps"]
+      resources: ["replicasets"]
+      namespaces: ["production", "staging"]
       mode: enforce
 
-    # Log-only for ConfigMaps (even if default is enforce)
+    # Enforce in namespaces with specific labels
+    - apiGroups: ["apps"]
+      resources: ["*"]
+      namespaceSelector:
+        matchLabels:
+          critical: "true"
+      mode: enforce
+
+    # Enforce for objects with specific labels
     - apiGroups: [""]
       resources: ["configmaps"]
-      mode: log
+      objectSelector:
+        matchLabels:
+          protected: "true"
+      mode: enforce
 ```
 
 | Mode | Behavior |
@@ -258,26 +272,29 @@ make test-verbose
 ```
 kausality/
 ├── cmd/
-│   └── kausality-webhook/    # Webhook server binary
+│   ├── kausality-webhook/       # Webhook server binary
+│   ├── kausality-backend-log/   # Backend that logs DriftReports as YAML
+│   └── kausality-backend-tui/   # Backend with interactive TUI
 ├── pkg/
-│   ├── admission/            # Admission webhook handler
-│   ├── approval/             # Approval/rejection annotation handling
-│   ├── callback/             # Drift notification webhook callbacks
-│   │   ├── v1alpha1/         # DriftReport API types
-│   │   ├── sender.go         # HTTP client for webhook calls
-│   │   └── tracker.go        # ID tracking for deduplication
-│   ├── config/               # Configuration types and loading
-│   ├── drift/                # Core drift detection logic
-│   │   ├── types.go          # DriftResult, ParentState types
-│   │   ├── detector.go       # Main drift detection
-│   │   ├── resolver.go       # Parent object resolution
-│   │   └── lifecycle.go      # Lifecycle phase detection
-│   ├── trace/                # Request trace propagation
-│   └── webhook/              # Webhook server
+│   ├── admission/               # Admission webhook handler
+│   ├── approval/                # Approval/rejection annotation handling
+│   ├── backend/                 # Backend server and TUI components
+│   ├── callback/                # Drift notification webhook callbacks
+│   │   ├── v1alpha1/            # DriftReport API types
+│   │   ├── sender.go            # HTTP client for webhook calls
+│   │   └── tracker.go           # ID tracking for deduplication
+│   ├── config/                  # Configuration types and loading
+│   ├── drift/                   # Core drift detection logic
+│   │   ├── types.go             # DriftResult, ParentState types
+│   │   ├── detector.go          # Main drift detection
+│   │   ├── resolver.go          # Parent object resolution
+│   │   └── lifecycle.go         # Lifecycle phase detection
+│   ├── trace/                   # Request trace propagation
+│   └── webhook/                 # Webhook server
 ├── charts/
-│   └── kausality/            # Helm chart
+│   └── kausality/               # Helm chart
 └── doc/
-    └── DESIGN.md             # Design specification
+    └── DESIGN.md                # Design specification
 ```
 
 ## Documentation
@@ -300,10 +317,15 @@ kausality/
   - [x] Approval types (once, generation, always)
   - [x] Rejection support
   - [x] Approval checking in handler
-  - [x] Enforce mode (per-G/GR configuration)
+  - [x] Enforce mode (per-G/GR configuration with label selectors)
   - [x] Approval pruning (mode=once consumed after use)
 
-- [ ] **Phase 4**: Drift notification webhook callbacks
+- [x] **Phase 4**: Drift notification webhook callbacks
+  - [x] DriftReport API (kausality.io/v1alpha1)
+  - [x] Content-based deduplication
+  - [x] Backend implementations (log, TUI)
+  - [x] Helm chart integration
+
 - [ ] **Phase 5**: ApprovalPolicy CRD
 - [ ] **Phase 6**: Slack integration
 

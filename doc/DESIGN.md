@@ -105,7 +105,7 @@ Here, `capi-controller` is the controller. Any child update with `fieldManager: 
 
 **For Terraform (L0 controllers)**:
 - Check if plan is non-empty when generation == observedGeneration
-- Use webhook notifications for plan review workflows
+- Use drift notification webhooks for plan review workflows
 
 ### Approval and Rejection Annotations
 
@@ -619,11 +619,13 @@ This is inherent in distributed systems — cross-resource consistency is limite
 - [x] Enforce mode (per-G/GR configuration via Helm)
 - [x] Approval pruning via admission mutation (update annotations)
 
-### Phase 4: Drift Notification Webhook System
-- Implement DriftReport webhook callback (kausality.io/v1alpha1)
-- Content-based deduplication (ID hash)
-- Send phase=Resolved on drift resolution
-- Action helpers for webhook implementations
+### Phase 4: Drift Notification Webhook System ✓
+- [x] Implement DriftReport webhook callback (kausality.io/v1alpha1)
+- [x] Content-based deduplication (ID hash)
+- [x] Send phase=Resolved on drift resolution
+- [x] Action helpers for webhook implementations
+- [x] Backend implementations (kausality-backend-log, kausality-backend-tui)
+- [x] Helm chart integration with backend deployment
 
 ### Phase 5: ApprovalPolicy CRD
 - Define and implement ApprovalPolicy CRD
