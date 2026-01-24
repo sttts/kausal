@@ -1,32 +1,223 @@
-# Kausality
+<p align="center">
+  <img src="logo.png" alt="Kausality Logo" width="200" />
+</p>
 
-> **⚠️ EXPERIMENTAL: This is a design experiment. Nothing is implemented yet. The ideas here may be flawed, incomplete, or entirely impractical.**
+<h1 align="center">Kausality</h1>
 
-**Every mutation needs a cause.**
+<p align="center">
+  <strong>Drift detection for Kubernetes controllers</strong>
+</p>
 
-Kausality traces and gates spec changes through Kubernetes object hierarchies. Controllers cannot mutate downstream resources unless explicitly allowed.
+<p align="center">
+  <a href="#overview">Overview</a> •
+  <a href="#how-it-works">How It Works</a> •
+  <a href="#installation">Installation</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#development">Development</a>
+</p>
 
-## Goals
+---
 
-This is about **safety**, not security.
+## Overview
 
-- Traceability of destructive actions
-- Avoidance of accidental damage where possible
-- Stays out of your way during normal operations
+Kausality detects unexpected infrastructure changes (drift) in Kubernetes by monitoring when controllers mutate resources without an explicit spec change. It distinguishes between:
 
-The system assumes good intent. It protects against accidents, not malicious actors.
+- **Expected changes**: Triggered by spec changes (`generation != observedGeneration`)
+- **Unexpected changes**: Triggered by drift, external modifications, or software updates (`generation == observedGeneration`)
+
+**Phase 1 (current)**: Logging only — drift is detected and logged, but mutations are not blocked.
+
+**Future phases** will add approval workflows, Slack integration, and policy-based exceptions.
 
 ## How It Works
 
-1. Human or CI changes a resource (e.g., `Deployment.spec.replicas`)
-2. Admission webhook injects **allowances** into the resource's annotations
-3. When a controller mutates a child resource, admission checks for matching allowances
-4. The **trace** propagates through the hierarchy, recording the causal chain
+When a controller mutates a child object, Kausality checks the **parent's** state:
 
-Without an allowance, controllers cannot mutate downstream resources.
+```
+parent := resolve via controller ownerReference (controller: true)
+
+if parent.generation != parent.status.observedGeneration:
+    # Parent spec changed → expected change → ALLOW
+else:
+    # Parent spec unchanged → drift detected → LOG
+```
+
+**Why this works**: Controllers reconcile children based on their own spec. If the parent's spec hasn't changed (generation == observedGeneration), any child mutation indicates drift.
+
+### Lifecycle Phases
+
+Kausality handles different lifecycle phases:
+
+| Phase | Behavior |
+|-------|----------|
+| **Initializing** | Allow all changes (resource is being set up) |
+| **Ready** | Drift detection applies |
+| **Deleting** | Allow all changes (cleanup phase) |
+
+Initialization is detected by checking (in order):
+1. `Initialized=True` condition
+2. `Ready=True` condition
+3. `status.observedGeneration` exists
+
+## Installation
+
+### Prerequisites
+
+- Kubernetes 1.25+
+- Helm 3.0+
+- cert-manager (optional, for TLS certificate management)
+
+### Using Helm
+
+```bash
+# Add the Helm repository (coming soon)
+# helm repo add kausality https://kausality-io.github.io/kausality
+
+# Install from source
+helm install kausality ./charts/kausality \
+  --namespace kausality-system \
+  --create-namespace
+```
+
+### Configuration
+
+See [charts/kausality/values.yaml](charts/kausality/values.yaml) for all available options.
+
+Key configuration options:
+
+```yaml
+# Which resources to intercept
+resourceRules:
+  include:
+    - apiGroups: ["apps"]
+      resources: ["deployments", "replicasets"]
+    - apiGroups: ["example.com"]
+      resources: ["ekscluster", "nodepools"]
+
+# Namespaces to exclude
+excludeNamespaces:
+  - kube-system
+  - kube-public
+
+# Certificate management
+certificates:
+  certManager:
+    enabled: true
+    issuerRef:
+      name: letsencrypt-prod
+      kind: ClusterIssuer
+```
+
+## Configuration
+
+### Resource Targeting
+
+Configure which resources are subject to drift detection via `resourceRules`:
+
+```yaml
+resourceRules:
+  include:
+    # All resources in apps group
+    - apiGroups: ["apps"]
+      resources: ["*"]
+    # Specific custom resources
+    - apiGroups: ["example.com"]
+      resources: ["ekscluster", "nodepools"]
+  exclude:
+    # Skip ConfigMaps and Secrets
+    - apiGroups: [""]
+      resources: ["configmaps", "secrets"]
+```
+
+### Namespace Exclusions
+
+Exclude entire namespaces from drift detection:
+
+```yaml
+excludeNamespaces:
+  - kube-system
+  - kube-public
+  - kube-node-lease
+```
+
+## Development
+
+### Prerequisites
+
+- Go 1.23+
+- Docker (for building images)
+- kubectl configured for a test cluster
+- [kind](https://kind.sigs.k8s.io/) (optional, for local testing)
+
+### Building
+
+```bash
+# Build the webhook binary
+make build
+
+# Run tests
+make test
+
+# Run linter
+make lint
+
+# Build Docker image
+make docker-build
+```
+
+### Running Locally
+
+```bash
+# Run the webhook locally (requires kubeconfig)
+make run
+```
+
+### Testing
+
+```bash
+# Run all tests
+make test
+
+# Run tests with verbose output
+make test-verbose
+```
+
+### Project Structure
+
+```
+kausality/
+├── cmd/
+│   └── kausality-webhook/    # Webhook server binary
+├── pkg/
+│   ├── drift/                # Core drift detection logic
+│   │   ├── types.go          # DriftResult, ParentState types
+│   │   ├── detector.go       # Main drift detection
+│   │   ├── resolver.go       # Parent object resolution
+│   │   └── lifecycle.go      # Lifecycle phase detection
+│   ├── admission/            # Admission webhook handler
+│   └── webhook/              # Webhook server
+├── charts/
+│   └── kausality/            # Helm chart
+└── doc/
+    └── DESIGN.md             # Design specification
+```
 
 ## Documentation
 
-- [doc/DESIGN.md](doc/DESIGN.md) - Full design specification
-- [doc/DESIGN-SIMPLE.md](doc/DESIGN-SIMPLE.md) - Drift detection and escalation
+- [Design Document](doc/DESIGN.md) — Full design specification for admission-only drift detection
 
+## Roadmap
+
+- [x] **Phase 1**: Logging only (current)
+  - Detect drift via generation/observedGeneration comparison
+  - Log when drift would be blocked
+  - Support both library mode and webhook mode
+
+- [ ] **Phase 2**: Request-trace annotation propagation
+- [ ] **Phase 3**: Per-object approval annotations
+- [ ] **Phase 4**: ApprovalPolicy CRD and Slack integration
+- [ ] **Phase 5**: TerraformApprovalPolicy for L0 controllers
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE) for details.
