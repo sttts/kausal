@@ -9,6 +9,10 @@ import (
 // TraceAnnotation is the annotation key for the trace.
 const TraceAnnotation = "kausality.io/trace"
 
+// TraceMetadataPrefix is the prefix for custom trace metadata annotations.
+// Annotations like "kausality.io/trace-ticket" become Labels["ticket"] in the trace.
+const TraceMetadataPrefix = "kausality.io/trace-"
+
 // Trace represents the causal chain of mutations through a resource hierarchy.
 // It is stored as a JSON array in the kausality.io/trace annotation.
 type Trace []Hop
@@ -27,6 +31,10 @@ type Hop struct {
 	User string `json:"user"`
 	// Timestamp of the mutation.
 	Timestamp time.Time `json:"timestamp"`
+	// Labels contains custom metadata from kausality.io/trace-* annotations.
+	// For example, "kausality.io/trace-ticket=JIRA-123" becomes Labels["ticket"]="JIRA-123".
+	// Labels are propagated from parent to child when extending traces.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // Parse parses a trace from its JSON representation.
@@ -97,4 +105,38 @@ func NewHop(apiVersion, kind, name string, generation int64, user string) Hop {
 		User:       user,
 		Timestamp:  time.Now().UTC(),
 	}
+}
+
+// NewHopWithLabels creates a new Hop with the current timestamp and custom labels.
+func NewHopWithLabels(apiVersion, kind, name string, generation int64, user string, labels map[string]string) Hop {
+	hop := NewHop(apiVersion, kind, name, generation, user)
+	if len(labels) > 0 {
+		hop.Labels = labels
+	}
+	return hop
+}
+
+// ExtractTraceLabels extracts trace metadata from annotations with the kausality.io/trace-* prefix.
+// For example, "kausality.io/trace-ticket=JIRA-123" returns map["ticket"]="JIRA-123".
+// Annotations with empty suffix (exactly "kausality.io/trace-") are skipped.
+func ExtractTraceLabels(annotations map[string]string) map[string]string {
+	if annotations == nil {
+		return nil
+	}
+
+	var labels map[string]string
+	for key, value := range annotations {
+		if len(key) > len(TraceMetadataPrefix) && key[:len(TraceMetadataPrefix)] == TraceMetadataPrefix {
+			// Extract the key after the prefix
+			labelKey := key[len(TraceMetadataPrefix):]
+			if labelKey == "" {
+				continue // Skip empty label keys
+			}
+			if labels == nil {
+				labels = make(map[string]string)
+			}
+			labels[labelKey] = value
+		}
+	}
+	return labels
 }

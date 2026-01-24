@@ -67,10 +67,13 @@ func (p *Propagator) PropagateWithFieldManager(ctx context.Context, obj client.O
 		IsOrigin: isOrigin,
 	}
 
+	// Extract trace labels from this object's annotations
+	labels := ExtractTraceLabels(obj.GetAnnotations())
+
 	if isOrigin {
 		// Create new trace starting with this object
 		result.Trace = Trace{
-			NewHop(apiVersion, gvk.Kind, obj.GetName(), obj.GetGeneration(), user),
+			NewHopWithLabels(apiVersion, gvk.Kind, obj.GetName(), obj.GetGeneration(), user, labels),
 		}
 	} else {
 		// Get parent's trace
@@ -80,8 +83,8 @@ func (p *Propagator) PropagateWithFieldManager(ctx context.Context, obj client.O
 		}
 		result.ParentTrace = parentTrace
 
-		// Extend trace with new hop
-		hop := NewHop(apiVersion, gvk.Kind, obj.GetName(), obj.GetGeneration(), user)
+		// Extend trace with new hop (each hop has its own labels, no inheritance)
+		hop := NewHopWithLabels(apiVersion, gvk.Kind, obj.GetName(), obj.GetGeneration(), user, labels)
 		result.Trace = parentTrace.Append(hop)
 	}
 

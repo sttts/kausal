@@ -297,9 +297,33 @@ Non-owning controllers like HPA also appear as **origins** — they update objec
 - **Extended** when a controller propagates changes to children
 - **Replaced** when parent generation changes (new causal chain starts)
 
-#### Trace Metadata (Possible Extension)
+#### Trace Labels
 
-Additional metadata propagation (e.g., Jira issues, PR links, Slack threads) is intentionally left unspecified for now. This will be designed based on real-world usage patterns.
+Custom metadata can be attached to trace hops via `kausality.io/trace-*` annotations:
+
+```yaml
+metadata:
+  annotations:
+    kausality.io/trace-ticket: "JIRA-123"
+    kausality.io/trace-pr: "567"
+    kausality.io/trace-deployment: "deploy-42"
+```
+
+These become `labels` in the trace hop:
+
+```json
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "name": "prod",
+  "generation": 5,
+  "user": "hans@example.com",
+  "timestamp": "2026-01-24T10:30:00Z",
+  "labels": {"ticket": "JIRA-123", "pr": "567", "deployment": "deploy-42"}
+}
+```
+
+Each hop captures labels from its own object's annotations. Labels are not inherited from parent to child — the parent's labels are already visible in the parent's hop entry.
 
 ### Slack Escalation
 

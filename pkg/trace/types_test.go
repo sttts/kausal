@@ -186,3 +186,169 @@ func TestTrace_MarshalJSON_Nil(t *testing.T) {
 		t.Errorf("Marshal(nil) = %q, want %q", string(data), "[]")
 	}
 }
+
+func TestExtractTraceLabels(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		want        map[string]string
+	}{
+		{
+			name:        "nil annotations",
+			annotations: nil,
+			want:        nil,
+		},
+		{
+			name:        "no trace labels",
+			annotations: map[string]string{"foo": "bar"},
+			want:        nil,
+		},
+		{
+			name: "single trace label",
+			annotations: map[string]string{
+				"kausality.io/trace-ticket": "JIRA-123",
+			},
+			want: map[string]string{"ticket": "JIRA-123"},
+		},
+		{
+			name: "multiple trace labels",
+			annotations: map[string]string{
+				"kausality.io/trace-ticket":     "JIRA-123",
+				"kausality.io/trace-deployment": "deploy-42",
+				"kausality.io/trace-env":        "prod",
+			},
+			want: map[string]string{
+				"ticket":     "JIRA-123",
+				"deployment": "deploy-42",
+				"env":        "prod",
+			},
+		},
+		{
+			name: "mixed annotations",
+			annotations: map[string]string{
+				"kausality.io/trace-ticket": "JIRA-123",
+				"kausality.io/trace":        "[...]", // main trace annotation, not a label
+				"other/annotation":          "value",
+			},
+			want: map[string]string{"ticket": "JIRA-123"},
+		},
+		{
+			name: "exact prefix match only",
+			annotations: map[string]string{
+				"kausality.io/trace-foo": "bar",
+				"kausality.io/tracefoo":  "should not match",
+				"kausality.io/trace-":    "empty key skipped",
+				"other.io/trace-ticket":  "wrong prefix",
+			},
+			want: map[string]string{
+				"foo": "bar",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractTraceLabels(tt.annotations)
+			if len(got) != len(tt.want) {
+				t.Errorf("ExtractTraceLabels() got %d labels, want %d", len(got), len(tt.want))
+				t.Logf("got: %v", got)
+				t.Logf("want: %v", tt.want)
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("ExtractTraceLabels()[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestNewHopWithLabels(t *testing.T) {
+	labels := map[string]string{"ticket": "JIRA-123", "env": "prod"}
+	hop := NewHopWithLabels("apps/v1", "Deployment", "test", 5, "hans@example.com", labels)
+
+	if hop.APIVersion != "apps/v1" {
+		t.Errorf("APIVersion = %q, want %q", hop.APIVersion, "apps/v1")
+	}
+	if len(hop.Labels) != 2 {
+		t.Errorf("Labels count = %d, want 2", len(hop.Labels))
+	}
+	if hop.Labels["ticket"] != "JIRA-123" {
+		t.Errorf("Labels[ticket] = %q, want %q", hop.Labels["ticket"], "JIRA-123")
+	}
+}
+
+func TestNewHopWithLabels_NilLabels(t *testing.T) {
+	hop := NewHopWithLabels("apps/v1", "Deployment", "test", 5, "user", nil)
+	if hop.Labels != nil {
+		t.Errorf("Labels should be nil for nil input, got %v", hop.Labels)
+	}
+}
+
+func TestNewHopWithLabels_EmptyLabels(t *testing.T) {
+	hop := NewHopWithLabels("apps/v1", "Deployment", "test", 5, "user", map[string]string{})
+	if hop.Labels != nil {
+		t.Errorf("Labels should be nil for empty input, got %v", hop.Labels)
+	}
+}
+
+func TestHopWithLabels_JSON(t *testing.T) {
+	ts := time.Date(2026, 1, 24, 10, 30, 0, 0, time.UTC)
+	hop := Hop{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       "test",
+		Generation: 5,
+		User:       "user",
+		Timestamp:  ts,
+		Labels:     map[string]string{"ticket": "JIRA-123"},
+	}
+
+	data, err := json.Marshal(hop)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Verify labels are included
+	var parsed Hop
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if parsed.Labels["ticket"] != "JIRA-123" {
+		t.Errorf("Labels[ticket] = %q, want %q", parsed.Labels["ticket"], "JIRA-123")
+	}
+}
+
+func TestHopWithoutLabels_JSON(t *testing.T) {
+	ts := time.Date(2026, 1, 24, 10, 30, 0, 0, time.UTC)
+	hop := Hop{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       "test",
+		Generation: 5,
+		User:       "user",
+		Timestamp:  ts,
+	}
+
+	data, err := json.Marshal(hop)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Verify labels field is omitted (omitempty)
+	str := string(data)
+	if contains(str, "labels") {
+		t.Errorf("JSON should not contain 'labels' field when empty: %s", str)
+	}
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
