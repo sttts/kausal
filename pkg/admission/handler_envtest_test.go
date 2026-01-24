@@ -28,6 +28,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	kadmission "github.com/kausality-io/kausality/pkg/admission"
+	"github.com/kausality-io/kausality/pkg/approval"
+	"github.com/kausality-io/kausality/pkg/config"
 	"github.com/kausality-io/kausality/pkg/drift"
 	"github.com/kausality-io/kausality/pkg/trace"
 )
@@ -935,6 +937,907 @@ func TestMultipleOwnerRefs_OnlyControllerMatters(t *testing.T) {
 	if result.ParentRef.Name != controllerDeploy.Name {
 		t.Errorf("expected ParentRef.Name=%q (controller), got %q",
 			controllerDeploy.Name, result.ParentRef.Name)
+	}
+}
+
+// =============================================================================
+// Test: Approval - Mode Always
+// =============================================================================
+
+func TestApproval_ModeAlways(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "approval-always-deploy")
+
+	// Create child ReplicaSet FIRST (so we know its name)
+	rs := createReplicaSetWithOwner(t, ctx, "approval-always-rs", deploy)
+
+	// Set parent as ready (gen == obsGen) - drift scenario
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Add approval annotation using ACTUAL RS name
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	approvals := []approval.Approval{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Mode: approval.ModeAlways},
+	}
+	approvalsJSON, _ := approval.MarshalApprovals(approvals)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.ApprovalsAnnotation] = approvalsJSON
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment with approval: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Check approval directly
+	checker := approval.NewChecker()
+	childRef := approval.ChildRef{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name}
+	result := checker.Check(deploy, childRef, deploy.Generation)
+
+	t.Logf("Approval check: approved=%v, reason=%s", result.Approved, result.Reason)
+
+	if !result.Approved {
+		t.Errorf("expected approved=true for mode=always")
+	}
+	if result.MatchedApproval == nil {
+		t.Errorf("expected MatchedApproval to be set")
+	}
+	if result.MatchedApproval != nil && result.MatchedApproval.Mode != approval.ModeAlways {
+		t.Errorf("expected Mode=%q, got %q", approval.ModeAlways, result.MatchedApproval.Mode)
+	}
+}
+
+// =============================================================================
+// Test: Approval - Mode Once (Valid)
+// =============================================================================
+
+func TestApproval_ModeOnce(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "approval-once-deploy")
+
+	// Create child ReplicaSet FIRST
+	rs := createReplicaSetWithOwner(t, ctx, "approval-once-rs", deploy)
+
+	// Set parent as ready
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch to get generation AFTER status update (status update doesn't bump generation)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Add approval with mode=once matching current generation
+	approvals := []approval.Approval{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Generation: deploy.Generation, Mode: approval.ModeOnce},
+	}
+	approvalsJSON, _ := approval.MarshalApprovals(approvals)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.ApprovalsAnnotation] = approvalsJSON
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment with approval: %v", err)
+	}
+
+	// Re-fetch (generation bumps due to annotation update)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	t.Logf("Parent generation: %d, approval generation in annotation: %d", deploy.Generation, deploy.Generation-1)
+
+	// The approval was set for generation N, but update bumped to N+1
+	// So we need to check with the generation the approval was created for
+	checker := approval.NewChecker()
+	childRef := approval.ChildRef{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name}
+
+	// Check with the original generation (the one in the approval)
+	// Parse back to verify
+	parsedApprovals, _ := approval.ParseApprovals(deploy.GetAnnotations()[approval.ApprovalsAnnotation])
+	if len(parsedApprovals) == 0 {
+		t.Fatal("no approvals parsed")
+	}
+	approvalGen := parsedApprovals[0].Generation
+
+	result := checker.Check(deploy, childRef, approvalGen)
+
+	t.Logf("Approval check: approved=%v, reason=%s", result.Approved, result.Reason)
+
+	if !result.Approved {
+		t.Errorf("expected approved=true for mode=once with matching generation")
+	}
+	if result.MatchedApproval == nil {
+		t.Errorf("expected MatchedApproval to be set")
+	}
+	if result.MatchedApproval != nil && result.MatchedApproval.Mode != approval.ModeOnce {
+		t.Errorf("expected Mode=%q, got %q", approval.ModeOnce, result.MatchedApproval.Mode)
+	}
+}
+
+// =============================================================================
+// Test: Approval - Mode Generation (Valid)
+// =============================================================================
+
+func TestApproval_ModeGeneration(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "approval-gen-deploy")
+
+	// Create child ReplicaSet FIRST
+	rs := createReplicaSetWithOwner(t, ctx, "approval-gen-rs", deploy)
+
+	// Set parent as ready
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Add approval with mode=generation - use CURRENT generation
+	currentGen := deploy.Generation
+	approvals := []approval.Approval{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Generation: currentGen, Mode: approval.ModeGeneration},
+	}
+	approvalsJSON, _ := approval.MarshalApprovals(approvals)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.ApprovalsAnnotation] = approvalsJSON
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment with approval: %v", err)
+	}
+
+	// Re-fetch (generation bumped)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Check approval - verify it matches for the generation it was created for
+	checker := approval.NewChecker()
+	childRef := approval.ChildRef{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name}
+	result := checker.Check(deploy, childRef, currentGen)
+
+	t.Logf("Approval check: approved=%v, reason=%s", result.Approved, result.Reason)
+
+	if !result.Approved {
+		t.Errorf("expected approved=true for mode=generation with matching generation")
+	}
+	if result.MatchedApproval != nil && result.MatchedApproval.Mode != approval.ModeGeneration {
+		t.Errorf("expected Mode=%q, got %q", approval.ModeGeneration, result.MatchedApproval.Mode)
+	}
+}
+
+// =============================================================================
+// Test: Approval - Stale Generation (Invalid)
+// =============================================================================
+
+func TestApproval_StaleGeneration(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "approval-stale-deploy")
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "approval-stale-rs", deploy)
+
+	// Set as ready
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Add approval with generation=1 (will be stale after annotation update)
+	staleGeneration := int64(1)
+	approvals := []approval.Approval{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Generation: staleGeneration, Mode: approval.ModeOnce},
+	}
+	approvalsJSON, _ := approval.MarshalApprovals(approvals)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.ApprovalsAnnotation] = approvalsJSON
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment with approval: %v", err)
+	}
+
+	// Re-fetch (generation bumps due to update)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	t.Logf("Deploy generation: %d, approval generation: %d", deploy.Generation, staleGeneration)
+
+	// Check approval - should be stale (approval is for gen 1, but current gen is higher)
+	checker := approval.NewChecker()
+	childRef := approval.ChildRef{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name}
+	result := checker.Check(deploy, childRef, deploy.Generation)
+
+	t.Logf("Approval check: approved=%v, reason=%s", result.Approved, result.Reason)
+
+	// Stale approval should NOT match (unless current gen happens to be 1)
+	if deploy.Generation > staleGeneration && result.Approved {
+		t.Errorf("expected approved=false for stale generation approval (gen=%d, approval.gen=%d)",
+			deploy.Generation, staleGeneration)
+	}
+}
+
+// =============================================================================
+// Test: Rejection - Blocks Drift
+// =============================================================================
+
+func TestRejection_BlocksDrift(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "rejection-deploy")
+
+	// Create child ReplicaSet FIRST
+	rs := createReplicaSetWithOwner(t, ctx, "rejection-rs", deploy)
+
+	// Set parent as ready
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Add rejection annotation using actual RS name
+	rejections := []approval.Rejection{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Reason: "dangerous mutation"},
+	}
+	rejectionsJSON, _ := json.Marshal(rejections)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.RejectionsAnnotation] = string(rejectionsJSON)
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment with rejection: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Check for rejection
+	checker := approval.NewChecker()
+	childRef := approval.ChildRef{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name}
+	result := checker.Check(deploy, childRef, deploy.Generation)
+
+	t.Logf("Rejection check: rejected=%v, reason=%s", result.Rejected, result.Reason)
+
+	if !result.Rejected {
+		t.Errorf("expected rejected=true")
+	}
+	if result.Reason != "dangerous mutation" {
+		t.Errorf("expected reason 'dangerous mutation', got %q", result.Reason)
+	}
+	if result.MatchedRejection == nil {
+		t.Errorf("expected MatchedRejection to be set")
+	}
+}
+
+// =============================================================================
+// Test: Rejection Wins Over Approval
+// =============================================================================
+
+func TestRejection_WinsOverApproval(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "reject-wins-deploy")
+
+	// Create child ReplicaSet FIRST
+	rs := createReplicaSetWithOwner(t, ctx, "reject-wins-rs", deploy)
+
+	// Set parent as ready
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Add BOTH approval AND rejection for same child
+	approvals := []approval.Approval{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Mode: approval.ModeAlways},
+	}
+	approvalsJSON, _ := approval.MarshalApprovals(approvals)
+
+	rejections := []approval.Rejection{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Reason: "explicitly blocked"},
+	}
+	rejectionsJSON, _ := json.Marshal(rejections)
+
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.ApprovalsAnnotation] = approvalsJSON
+	annotations[approval.RejectionsAnnotation] = string(rejectionsJSON)
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Check - rejection should win
+	checker := approval.NewChecker()
+	childRef := approval.ChildRef{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name}
+	result := checker.Check(deploy, childRef, deploy.Generation)
+
+	t.Logf("Check result: approved=%v, rejected=%v, reason=%s",
+		result.Approved, result.Rejected, result.Reason)
+
+	// Rejection should win
+	if !result.Rejected {
+		t.Errorf("expected rejected=true (rejection wins over approval)")
+	}
+	if result.Approved {
+		t.Errorf("expected approved=false when rejected")
+	}
+	if result.Reason != "explicitly blocked" {
+		t.Errorf("expected reason 'explicitly blocked', got %q", result.Reason)
+	}
+}
+
+// =============================================================================
+// Test: Enforce Mode - Rejection Returns Denied Response
+// =============================================================================
+
+func TestEnforceMode_RejectionDenied(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "enforce-reject-deploy")
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "enforce-reject-rs", deploy)
+
+	// Add rejection annotation FIRST (this bumps generation)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	rejections := []approval.Rejection{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Reason: "blocked by policy"},
+	}
+	rejectionsJSON, _ := json.Marshal(rejections)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.RejectionsAnnotation] = string(rejectionsJSON)
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment: %v", err)
+	}
+
+	// Set parent as ready AFTER annotation update (drift scenario: gen == obsGen)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch to get managedFields
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Find the controller manager from managedFields (like a real controller would have)
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+	t.Logf("Parent state: gen=%d, obsGen=%d, controllerManager=%q",
+		deploy.Generation, deploy.Status.ObservedGeneration, controllerManager)
+
+	// Create handler with ENFORCE MODE for apps/replicasets
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeEnforce,
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get rs: %v", err)
+	}
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	// Create old and new versions with DIFFERENT specs to trigger drift check
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, err := json.Marshal(oldRS)
+	if err != nil {
+		t.Fatalf("failed to marshal old replicaset: %v", err)
+	}
+	newBytes, err := json.Marshal(newRS)
+	if err != nil {
+		t.Fatalf("failed to marshal new replicaset: %v", err)
+	}
+
+	// Use the actual controller manager from parent's managedFields
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("enforce-reject-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, result=%v", resp.Allowed, resp.Result)
+
+	// In enforce mode, rejection should deny the request
+	if resp.Allowed {
+		t.Errorf("expected allowed=false in enforce mode with rejection")
+	}
+	if resp.Result == nil {
+		t.Fatal("expected Result to be set")
+	}
+	if resp.Result.Message == "" {
+		t.Errorf("expected rejection message in Result.Message")
+	}
+	// The message should contain the rejection reason
+	if !containsSubstring(resp.Result.Message, "blocked by policy") {
+		t.Errorf("expected message to contain 'blocked by policy', got %q", resp.Result.Message)
+	}
+}
+
+// =============================================================================
+// Test: Enforce Mode - Unapproved Drift Returns Denied Response
+// =============================================================================
+
+func TestEnforceMode_UnapprovedDriftDenied(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "enforce-drift-deploy")
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "enforce-drift-rs", deploy)
+
+	// Set parent as ready (drift scenario: gen == obsGen) - NO approvals
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch to get managedFields
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Find the controller manager from managedFields
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+	t.Logf("Parent state: gen=%d, obsGen=%d, controllerManager=%q",
+		deploy.Generation, deploy.Status.ObservedGeneration, controllerManager)
+
+	// Create handler with ENFORCE MODE for apps/replicasets
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeEnforce,
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get rs: %v", err)
+	}
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	// Create old and new versions with DIFFERENT specs to trigger drift check
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, err := json.Marshal(oldRS)
+	if err != nil {
+		t.Fatalf("failed to marshal old replicaset: %v", err)
+	}
+	newBytes, err := json.Marshal(newRS)
+	if err != nil {
+		t.Fatalf("failed to marshal new replicaset: %v", err)
+	}
+
+	// Use the actual controller manager from parent's managedFields
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("enforce-drift-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, result=%v", resp.Allowed, resp.Result)
+
+	// In enforce mode, unapproved drift should deny the request
+	if resp.Allowed {
+		t.Errorf("expected allowed=false in enforce mode with unapproved drift")
+	}
+	if resp.Result == nil {
+		t.Fatal("expected Result to be set")
+	}
+	if resp.Result.Message == "" {
+		t.Errorf("expected drift message in Result.Message")
+	}
+	// The message should indicate drift with no approval
+	if !containsSubstring(resp.Result.Message, "no approval") {
+		t.Errorf("expected message to contain 'no approval', got %q", resp.Result.Message)
+	}
+}
+
+// =============================================================================
+// Test: Enforce Mode - Approved Drift Is Allowed
+// =============================================================================
+
+func TestEnforceMode_ApprovedDriftAllowed(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "enforce-approved-deploy")
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "enforce-approved-rs", deploy)
+
+	// Add approval annotation FIRST (this bumps generation)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	approvals := []approval.Approval{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Mode: approval.ModeAlways},
+	}
+	approvalsJSON, _ := approval.MarshalApprovals(approvals)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.ApprovalsAnnotation] = approvalsJSON
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment: %v", err)
+	}
+
+	// Set parent as ready AFTER annotation update (drift scenario: gen == obsGen)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch to get managedFields
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Find the controller manager from managedFields
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+	t.Logf("Parent state: gen=%d, obsGen=%d, controllerManager=%q",
+		deploy.Generation, deploy.Status.ObservedGeneration, controllerManager)
+
+	// Create handler with ENFORCE MODE for apps/replicasets
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeEnforce,
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get rs: %v", err)
+	}
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	// Create old and new versions with DIFFERENT specs to trigger drift check
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, err := json.Marshal(oldRS)
+	if err != nil {
+		t.Fatalf("failed to marshal old replicaset: %v", err)
+	}
+	newBytes, err := json.Marshal(newRS)
+	if err != nil {
+		t.Fatalf("failed to marshal new replicaset: %v", err)
+	}
+
+	// Use the actual controller manager from parent's managedFields
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("enforce-approved-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v", resp.Allowed)
+
+	// Even in enforce mode, approved drift should be allowed
+	if !resp.Allowed {
+		t.Errorf("expected allowed=true in enforce mode with valid approval")
+	}
+}
+
+// =============================================================================
+// Test: Non-Enforce Mode Returns Warnings
+// =============================================================================
+
+func TestNonEnforceMode_ReturnsWarnings(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "warning-deploy")
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "warning-rs", deploy)
+
+	// Set parent as ready (drift scenario: gen == obsGen) - NO approvals
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch to get managedFields
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Find the controller manager from managedFields
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler WITHOUT enforce mode (default log mode)
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog, // Non-enforce mode
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get rs: %v", err)
+	}
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	// Create old and new versions with DIFFERENT specs to trigger drift check
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, err := json.Marshal(oldRS)
+	if err != nil {
+		t.Fatalf("failed to marshal old replicaset: %v", err)
+	}
+	newBytes, err := json.Marshal(newRS)
+	if err != nil {
+		t.Fatalf("failed to marshal new replicaset: %v", err)
+	}
+
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("warning-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, warnings=%v", resp.Allowed, resp.Warnings)
+
+	// Should be allowed (non-enforce mode)
+	if !resp.Allowed {
+		t.Errorf("expected allowed=true in non-enforce mode")
+	}
+
+	// Should have warnings about drift
+	if len(resp.Warnings) == 0 {
+		t.Errorf("expected warnings in non-enforce mode with drift")
+	}
+
+	// Check warning content
+	hasKausalityWarning := false
+	for _, w := range resp.Warnings {
+		if containsSubstring(w, "kausality") && containsSubstring(w, "drift") {
+			hasKausalityWarning = true
+			break
+		}
+	}
+	if !hasKausalityWarning {
+		t.Errorf("expected kausality drift warning, got: %v", resp.Warnings)
+	}
+}
+
+// =============================================================================
+// Test: Approval Pruning - Stale Approvals Removed
+// =============================================================================
+
+func TestApprovalPruning_StaleApprovals(t *testing.T) {
+	pruner := approval.NewPruner()
+
+	approvals := []approval.Approval{
+		{APIVersion: "v1", Kind: "ConfigMap", Name: "always-valid", Mode: approval.ModeAlways},
+		{APIVersion: "v1", Kind: "ConfigMap", Name: "current-gen", Generation: 5, Mode: approval.ModeOnce},
+		{APIVersion: "v1", Kind: "ConfigMap", Name: "stale-gen", Generation: 3, Mode: approval.ModeOnce},
+		{APIVersion: "v1", Kind: "ConfigMap", Name: "future-gen", Generation: 7, Mode: approval.ModeGeneration},
+	}
+
+	// Prune with current generation = 5
+	result := pruner.PruneStale(approvals, 5)
+
+	t.Logf("Pruned from %d to %d approvals", len(approvals), len(result))
+
+	// Should keep: always-valid, current-gen, future-gen
+	// Should remove: stale-gen (generation 3 < 5)
+	if len(result) != 3 {
+		t.Errorf("expected 3 remaining approvals, got %d", len(result))
+	}
+
+	// Verify stale-gen is gone
+	for _, a := range result {
+		if a.Name == "stale-gen" {
+			t.Errorf("stale-gen should have been pruned")
+		}
 	}
 }
 

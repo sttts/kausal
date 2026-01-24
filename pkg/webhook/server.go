@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/kausality-io/kausality/pkg/admission"
+	"github.com/kausality-io/kausality/pkg/config"
 )
 
 // Config configures the webhook server.
@@ -35,6 +36,9 @@ type Config struct {
 	KeyName string
 	// HealthProbeBindAddress is the address for health probes. Defaults to ":8081".
 	HealthProbeBindAddress string
+	// DriftConfig provides per-resource drift detection configuration.
+	// If nil, defaults to log mode for all resources.
+	DriftConfig *config.Config
 }
 
 // Server is a standalone webhook server for drift detection.
@@ -82,8 +86,9 @@ func NewServer(cfg Config) *Server {
 // Register registers the admission handler with the webhook server.
 func (s *Server) Register() {
 	handler := admission.NewHandler(admission.Config{
-		Client: s.config.Client,
-		Log:    s.log,
+		Client:      s.config.Client,
+		Log:         s.log,
+		DriftConfig: s.config.DriftConfig,
 	})
 
 	s.webhookServer.Register("/mutate", &webhook.Admission{Handler: handler})

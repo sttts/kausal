@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kausality.fullname" . }}-config
+  labels:
+    {{- include "kausality.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    driftDetection:
+      defaultMode: {{ .Values.driftDetection.defaultMode | quote }}
+      {{- if .Values.driftDetection.overrides }}
+      overrides:
+        {{- toYaml .Values.driftDetection.overrides | nindent 8 }}
+      {{- end }}

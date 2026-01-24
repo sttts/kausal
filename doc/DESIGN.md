@@ -113,34 +113,21 @@ Here, `capi-controller` is the controller. Any child update with `fieldManager: 
 # On parent resource (e.g., EKSCluster)
 metadata:
   annotations:
-    kausality.io/approvals: |
-      [
-        {
-          "apiVersion": "v1",
-          "kind": "ConfigMap",
-          "name": "bar",
-          "generation": 5,
-          "mode": "once"
-        },
-        {
-          "apiVersion": "v1",
-          "kind": "Secret",
-          "name": "credentials",
-          "mode": "always"
-        }
-      ]
-    kausality.io/rejections: |
-      [
-        {
-          "apiVersion": "example.com/v1alpha1",
-          "kind": "NodePool",
-          "name": "pool-1",
-          "generation": 5,
-          "reason": "Destructive change, needs SRE review"
-        }
-      ]
-    kausality.io/request-trace: "ace-123,cluster-456"
+    # Condensed JSON format (single line recommended)
+    kausality.io/approvals: '[{"apiVersion":"v1","kind":"ConfigMap","name":"bar","generation":5,"mode":"once"},{"apiVersion":"v1","kind":"Secret","name":"credentials","mode":"always"}]'
+    kausality.io/rejections: '[{"apiVersion":"example.com/v1alpha1","kind":"NodePool","name":"pool-1","generation":5,"reason":"Destructive change, needs SRE review"}]'
+    kausality.io/trace: '[{"apiVersion":"example.com/v1alpha1","kind":"EKSCluster","name":"prod","generation":5,"user":"hans@example.com","timestamp":"2026-01-24T10:30:00Z"}]'
 ```
+
+**Approval fields:**
+- `apiVersion`, `kind`, `name`: Child resource reference (required)
+- `generation`: Parent generation this approval is valid for (required for `once`/`generation` modes)
+- `mode`: One of `once`, `generation`, `always` (defaults to `once`)
+
+**Rejection fields:**
+- `apiVersion`, `kind`, `name`: Child resource reference (required)
+- `generation`: Parent generation this rejection applies to (optional; if omitted, always active)
+- `reason`: Human-readable explanation (required)
 
 - Namespace is implicit (same as parent) — only applies to namespaced resources
 - `generation` field is only required for `once` and `generation` modes, not for `always`
@@ -154,11 +141,16 @@ metadata:
 | `generation` | Valid while `parent.generation == approval.generation` | Approve for current state, invalidate on spec change |
 | `always` | Permanent, never automatically pruned | Known-safe pattern, permanent exception |
 
+### Rejection Priority
+
+**Rejections are checked before approvals.** If a child has both an approval and a rejection, the rejection wins. This ensures explicit blocks cannot be accidentally bypassed.
+
 ### Approval Validity
 
 An approval is valid when:
-1. `approval.apiVersion/kind/name` matches the child being mutated
-2. Mode-specific:
+1. No matching rejection exists for this child
+2. `approval.apiVersion/kind/name` matches the child being mutated
+3. Mode-specific:
    - `once`: not yet consumed AND `approval.generation == parent.generation`
    - `generation`: `approval.generation == parent.generation`
    - `always`: always valid
@@ -518,21 +510,24 @@ This is inherent in distributed systems — cross-resource consistency is limite
 
 ## Implementation
 
-### Phase 1: Admission-Based Change Detection (Logging Only)
+### Phase 1: Admission-Based Change Detection (Logging Only) ✓
 - Implement admission webhook/plugin
 - Check parent generation vs observedGeneration
 - Log when drift would be blocked
-- Optional Slack notifications
 - No blocking, observability only
 
-### Phase 2: Request-Trace Annotation
+### Phase 2: Request-Trace Annotation ✓
 - Initialize request-trace on parent mutations
 - Propagate/replace trace through controller hierarchy
 
-### Phase 3: Per-Object Approval Annotation
-- Implement approval annotation parsing with modes (once, generation, always)
-- Add pruning on generation change via admission
-- Block drift without approval
+### Phase 3: Per-Object Approval Annotation *(in progress)*
+- [x] Implement approval annotation parsing with modes (once, generation, always)
+- [x] Implement rejection annotation parsing
+- [x] Rejection checking (rejection wins over approval)
+- [x] Approval pruning logic (prune stale generations, consume once)
+- [x] Integration with admission handler (logging mode)
+- [x] Enforce mode (per-G/GR configuration via Helm)
+- [ ] Approval pruning via admission mutation (update annotations)
 
 ### Phase 4: ApprovalPolicy CRD and Slack Integration
 - Define and implement ApprovalPolicy CRD

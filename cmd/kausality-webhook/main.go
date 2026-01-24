@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/kausality-io/kausality/pkg/config"
 	"github.com/kausality-io/kausality/pkg/webhook"
 )
 
@@ -35,12 +36,14 @@ func main() {
 		port                   int
 		certDir                string
 		healthProbeBindAddress string
+		configFile             string
 	)
 
 	flag.StringVar(&host, "host", "", "The address to bind to (default: all interfaces)")
 	flag.IntVar(&port, "port", 9443, "The port to listen on for webhook requests")
 	flag.StringVar(&certDir, "cert-dir", "/etc/webhook/certs", "The directory containing tls.crt and tls.key")
 	flag.StringVar(&healthProbeBindAddress, "health-probe-bind-address", ":8081", "The address for health probes")
+	flag.StringVar(&configFile, "config", "", "Path to config file (optional)")
 
 	opts := zap.Options{
 		Development: true,
@@ -56,23 +59,38 @@ func main() {
 		"port", port,
 		"certDir", certDir,
 		"healthProbeBindAddress", healthProbeBindAddress,
+		"configFile", configFile,
 	)
 
 	// Create Kubernetes client
-	config, err := rest.InClusterConfig()
+	k8sConfig, err := rest.InClusterConfig()
 	if err != nil {
 		log.Error(err, "unable to get in-cluster config, trying kubeconfig")
-		config, err = ctrl.GetConfig()
+		k8sConfig, err = ctrl.GetConfig()
 		if err != nil {
 			log.Error(err, "unable to get kubeconfig")
 			os.Exit(1)
 		}
 	}
 
-	k8sClient, err := client.New(config, client.Options{Scheme: scheme})
+	k8sClient, err := client.New(k8sConfig, client.Options{Scheme: scheme})
 	if err != nil {
 		log.Error(err, "unable to create Kubernetes client")
 		os.Exit(1)
+	}
+
+	// Load drift detection config if provided
+	var driftConfig *config.Config
+	if configFile != "" {
+		driftConfig, err = config.Load(configFile)
+		if err != nil {
+			log.Error(err, "unable to load config file", "path", configFile)
+			os.Exit(1)
+		}
+		log.Info("loaded config",
+			"defaultMode", driftConfig.DriftDetection.DefaultMode,
+			"overrides", len(driftConfig.DriftDetection.Overrides),
+		)
 	}
 
 	// Create and start webhook server
@@ -83,6 +101,7 @@ func main() {
 		Port:                   port,
 		CertDir:                certDir,
 		HealthProbeBindAddress: healthProbeBindAddress,
+		DriftConfig:            driftConfig,
 	})
 
 	server.Register()

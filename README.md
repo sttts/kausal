@@ -157,6 +157,40 @@ excludeNamespaces:
   - kube-node-lease
 ```
 
+### Drift Detection Mode
+
+Configure whether drift is logged only or enforced (requests blocked):
+
+```yaml
+driftDetection:
+  # Default mode for all resources: "log" or "enforce"
+  defaultMode: log
+
+  # Per-resource overrides
+  overrides:
+    # Enforce mode for apps/deployments
+    - apiGroups: ["apps"]
+      resources: ["deployments"]
+      mode: enforce
+
+    # Enforce mode for all custom resources
+    - apiGroups: ["example.com"]
+      resources: ["*"]
+      mode: enforce
+
+    # Log-only for ConfigMaps (even if default is enforce)
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      mode: log
+```
+
+| Mode | Behavior |
+|------|----------|
+| `log` | Drift is detected and logged, warnings added to response, but requests are allowed |
+| `enforce` | Drift without approval is denied with an error message |
+
+In `log` mode, drift warnings are returned via the admission response `warnings` field, which kubectl and other clients display to users.
+
 ## Development
 
 ### Prerequisites
@@ -206,12 +240,15 @@ kausality/
 ├── cmd/
 │   └── kausality-webhook/    # Webhook server binary
 ├── pkg/
+│   ├── admission/            # Admission webhook handler
+│   ├── approval/             # Approval/rejection annotation handling
+│   ├── config/               # Configuration types and loading
 │   ├── drift/                # Core drift detection logic
 │   │   ├── types.go          # DriftResult, ParentState types
 │   │   ├── detector.go       # Main drift detection
 │   │   ├── resolver.go       # Parent object resolution
 │   │   └── lifecycle.go      # Lifecycle phase detection
-│   ├── admission/            # Admission webhook handler
+│   ├── trace/                # Request trace propagation
 │   └── webhook/              # Webhook server
 ├── charts/
 │   └── kausality/            # Helm chart
@@ -239,7 +276,7 @@ kausality/
   - [x] Approval types (once, generation, always)
   - [x] Rejection support
   - [x] Approval checking in handler
-  - [ ] Enforce mode (per-G/GR configuration)
+  - [x] Enforce mode (per-G/GR configuration)
   - [ ] Approval pruning on parent generation change
 
 - [ ] **Phase 4**: ApprovalPolicy CRD and Slack integration

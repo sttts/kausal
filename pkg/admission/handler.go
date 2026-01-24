@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/kausality-io/kausality/pkg/approval"
+	"github.com/kausality-io/kausality/pkg/config"
 	"github.com/kausality-io/kausality/pkg/drift"
 	"github.com/kausality-io/kausality/pkg/trace"
 )
@@ -29,6 +30,7 @@ type Handler struct {
 	detector        *drift.Detector
 	propagator      *trace.Propagator
 	approvalChecker *approval.Checker
+	config          *config.Config
 	log             logr.Logger
 }
 
@@ -36,15 +38,23 @@ type Handler struct {
 type Config struct {
 	Client client.Client
 	Log    logr.Logger
+	// DriftConfig provides per-resource drift detection configuration.
+	// If nil, defaults to log mode for all resources.
+	DriftConfig *config.Config
 }
 
 // NewHandler creates a new admission Handler.
 func NewHandler(cfg Config) *Handler {
+	driftConfig := cfg.DriftConfig
+	if driftConfig == nil {
+		driftConfig = config.Default()
+	}
 	return &Handler{
 		client:          cfg.Client,
 		detector:        drift.NewDetector(cfg.Client),
 		propagator:      trace.NewPropagator(cfg.Client),
 		approvalChecker: approval.NewChecker(),
+		config:          driftConfig,
 		log:             cfg.Log.WithName("kausality-admission"),
 	}
 }
@@ -108,21 +118,41 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		)
 	}
 
+	// Track warnings to add to the response
+	var warnings []string
+
+	// Determine enforce mode for this resource
+	gvk := obj.GetObjectKind().GroupVersionKind()
+	enforceMode := h.config.IsEnforceMode(gvk)
+	driftMode := h.config.GetModeForResource(gvk)
+
 	if driftResult.DriftDetected {
 		// Check for approvals when drift is detected
 		approvalResult := h.checkApprovals(ctx, driftResult, obj, log)
 		logFields = append(logFields,
 			"approved", approvalResult.Approved,
 			"rejected", approvalResult.Rejected,
+			"driftMode", driftMode,
 		)
 
 		if approvalResult.Rejected {
+			rejectMsg := fmt.Sprintf("drift rejected: %s", approvalResult.Reason)
 			log.Info("DRIFT REJECTED", append(logFields, "rejectReason", approvalResult.Reason)...)
-			// Phase 1: still allow but log - in enforce mode this would deny
+			if enforceMode {
+				return admission.Denied(rejectMsg)
+			}
+			// Non-enforce mode: add warning but allow
+			warnings = append(warnings, fmt.Sprintf("[kausality] %s (would be blocked in enforce mode)", rejectMsg))
 		} else if approvalResult.Approved {
 			log.Info("DRIFT APPROVED", append(logFields, "approvalReason", approvalResult.Reason)...)
 		} else {
+			driftMsg := "drift detected: no approval found for this mutation"
 			log.Info("DRIFT DETECTED - no approval found", logFields...)
+			if enforceMode {
+				return admission.Denied(driftMsg)
+			}
+			// Non-enforce mode: add warning but allow
+			warnings = append(warnings, fmt.Sprintf("[kausality] %s (would be blocked in enforce mode)", driftMsg))
 		}
 	} else {
 		log.V(1).Info("drift check passed", logFields...)
@@ -133,7 +163,7 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	if err != nil {
 		log.Error(err, "trace propagation failed")
 		// Don't fail the request on trace errors - just log and continue
-		return admission.Allowed(driftResult.Reason)
+		return withWarnings(admission.Allowed(driftResult.Reason), warnings)
 	}
 
 	// Log trace info
@@ -146,17 +176,26 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	// For DELETE, we can't patch (no new object), just allow after logging
 	if req.Operation == admissionv1.Delete {
 		log.V(1).Info("delete operation traced", "trace", traceResult.Trace.String())
-		return admission.Allowed(driftResult.Reason)
+		return withWarnings(admission.Allowed(driftResult.Reason), warnings)
 	}
 
 	// Create patch to add/update trace annotation
 	patch, err := createTracePatch(obj, traceResult.Trace)
 	if err != nil {
 		log.Error(err, "failed to create trace patch")
-		return admission.Allowed(driftResult.Reason)
+		return withWarnings(admission.Allowed(driftResult.Reason), warnings)
 	}
 
-	return admission.PatchResponseFromRaw(req.Object.Raw, patch)
+	resp := admission.PatchResponseFromRaw(req.Object.Raw, patch)
+	return withWarnings(resp, warnings)
+}
+
+// withWarnings adds warnings to an admission response.
+func withWarnings(resp admission.Response, warnings []string) admission.Response {
+	if len(warnings) > 0 {
+		resp.Warnings = append(resp.Warnings, warnings...)
+	}
+	return resp
 }
 
 // createTracePatch creates a JSON patch to set the trace annotation.

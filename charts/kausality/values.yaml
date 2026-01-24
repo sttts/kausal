@@ -91,6 +91,26 @@ excludeNamespaces:
   - kube-public
   - kube-node-lease
 
+# Drift detection mode configuration
+# Can be configured globally or per-resource
+driftDetection:
+  # Global default mode: "log" (allow but warn) or "enforce" (deny unapproved drift)
+  defaultMode: log
+
+  # Per-resource overrides (optional)
+  # Allows different modes for different API groups/resources
+  # overrides:
+  #   - apiGroups: ["apps"]
+  #     resources: ["deployments"]
+  #     mode: enforce
+  #   - apiGroups: ["example.com"]
+  #     resources: ["ekscluster"]
+  #     mode: enforce
+  #   - apiGroups: [""]
+  #     resources: ["configmaps"]
+  #     mode: log  # Just log, don't enforce
+  overrides: []
+
 # Logging configuration
 logging:
   # Log level (debug, info, warn, error)
