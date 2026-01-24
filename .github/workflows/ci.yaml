@@ -126,3 +126,33 @@ jobs:
         run: ./test/e2e/run.sh
         env:
           CLUSTER_NAME: kausality-e2e
+
+  e2e-crossplane:
+    name: E2E Tests (Crossplane)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Set up kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Install ko
+        uses: ko-build/setup-ko@v0.7
+
+      - name: Run Crossplane e2e tests
+        run: ./test/e2e/crossplane/run.sh
+        env:
+          CLUSTER_NAME: kausality-crossplane-e2e
