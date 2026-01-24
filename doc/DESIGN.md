@@ -40,6 +40,53 @@ else:
 
 **Spec changes only**: Kausality only intercepts mutations to `spec`. Changes to `status` or `metadata` are ignored — no drift detection, no tracing, no approval required. Status updates are controllers reporting state, and metadata changes are typically administrative.
 
+### Controller Identification
+
+A key challenge is identifying whether a mutation comes from the controller (expected) or another actor (potential drift). We use Kubernetes managedFields for this.
+
+**The controller is identified by who updates `status.observedGeneration` on the parent.**
+
+This is reliable because:
+- Only the reconciling controller updates `observedGeneration`
+- It's tracked in `parent.metadata.managedFields`
+- The manager string stays in sync across upgrades (controller updates both parent status and children)
+
+**Algorithm:**
+
+```
+1. Request comes in for child object
+2. Find parent via controller ownerReference (controller: true)
+3. Look at parent's managedFields → find manager of f:status.f:observedGeneration
+4. Compare request.options.fieldManager with that manager
+5. If match → controller is updating → check parent gen vs obsGen for drift
+6. If no match → different actor → new trace origin (potential drift)
+```
+
+**Example managedFields:**
+```yaml
+managedFields:
+- manager: capi-controller
+  operation: Update
+  subresource: status
+  fieldsV1:
+    f:status:
+      f:observedGeneration: {}
+      f:conditions: {}
+```
+
+Here, `capi-controller` is the controller. Any child update with `fieldManager: capi-controller` is from the controller.
+
+**Why not use userInfo.username?**
+- `fieldManager` is available on all mutating requests (Create, Update, Patch)
+- Manager strings stay consistent within a controller's operation
+- No annotation needed — fully dynamic comparison against existing managedFields
+
+**Late installation:** Works automatically. The parent's managedFields already contains the controller's manager string from previous status updates.
+
+**Non-owning controllers (HPA, VPA):** These don't set controller ownerReferences and don't update `observedGeneration`. They appear as separate actors. Their changes create new trace origins (drift from the primary controller's perspective). Use ApprovalPolicy to whitelist known actors like HPA.
+
+**Implementation:** Use `sigs.k8s.io/structured-merge-diff` for parsing managedFields. This is the official library used by the Kubernetes API server.
+
 **For Terraform (L0 controllers)**:
 - Check if plan is non-empty when generation == observedGeneration
 - Future: TerraformApprovalPolicy CRD for plan-based exceptions
@@ -222,15 +269,19 @@ Namespace is omitted — it's the same as the object carrying the trace (or clus
 
 **Origin (new trace):**
 - No controller ownerReference, OR
-- Parent has `generation == observedGeneration` (no active reconciliation)
+- Parent has `generation == observedGeneration` (no active reconciliation), OR
+- `request.fieldManager` does not match parent's `observedGeneration` manager (different actor)
 - → Start new trace, this user is the initiator
 
 **Controller hop (extend trace):**
 - Has controller ownerReference with `controller: true` AND
-- Parent has `generation != observedGeneration` (parent is reconciling)
+- Parent has `generation != observedGeneration` (parent is reconciling) AND
+- `request.fieldManager` matches manager of parent's `status.observedGeneration` in managedFields
 - → Copy trace from parent, append new hop
 
 GitOps tools (ArgoCD, Flux) appear as **origins** since they apply manifests directly without `controller: true` ownerReferences. Kubernetes controllers (Deployment→ReplicaSet→Pod) appear as **hops**.
+
+Non-owning controllers like HPA also appear as **origins** — they update objects without ownerReferences and don't match the primary controller's manager. Use ApprovalPolicy to allow known actors.
 
 #### Trace Lifecycle
 
