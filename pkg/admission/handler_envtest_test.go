@@ -1809,6 +1809,270 @@ func TestNonEnforceMode_ReturnsWarnings(t *testing.T) {
 }
 
 // =============================================================================
+// Test: Mode=Once Approval Is Consumed After Use
+// =============================================================================
+
+func TestApprovalConsumed_ModeOnce(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "consume-deploy")
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "consume-rs", deploy)
+
+	// Get current generation for the approval
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Add mode=once approval annotation with the NEXT generation
+	// (since updating annotations will bump the generation)
+	approvals := []approval.Approval{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Mode: approval.ModeOnce, Generation: deploy.Generation + 1},
+	}
+	approvalsJSON, _ := approval.MarshalApprovals(approvals)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.ApprovalsAnnotation] = approvalsJSON
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment with approval: %v", err)
+	}
+
+	// Set parent as ready AFTER annotation update (drift scenario: gen == obsGen)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Verify approval exists before handler
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	beforeApprovals := deploy.GetAnnotations()[approval.ApprovalsAnnotation]
+	t.Logf("Before handler - approvals: %s", beforeApprovals)
+
+	// Find the controller manager from managedFields
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler (log mode - approval should still be consumed)
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    ctrl.Log.WithName("test-consume"),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog,
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get rs: %v", err)
+	}
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	// Create old and new versions with DIFFERENT specs to trigger drift check
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, err := json.Marshal(oldRS)
+	if err != nil {
+		t.Fatalf("failed to marshal old replicaset: %v", err)
+	}
+	newBytes, err := json.Marshal(newRS)
+	if err != nil {
+		t.Fatalf("failed to marshal new replicaset: %v", err)
+	}
+
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("consume-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v", resp.Allowed)
+
+	// Should be allowed (approval was valid)
+	if !resp.Allowed {
+		t.Errorf("expected allowed=true with valid approval")
+	}
+
+	// Give a moment for the async update (if any)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify approval was consumed (removed from parent)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment after handler: %v", err)
+	}
+	afterApprovals := deploy.GetAnnotations()[approval.ApprovalsAnnotation]
+	t.Logf("After handler - approvals: %s", afterApprovals)
+
+	// The approval should be removed (empty or missing)
+	if afterApprovals != "" {
+		// Parse and check if our approval is still there
+		remaining, _ := approval.ParseApprovals(afterApprovals)
+		for _, a := range remaining {
+			if a.Name == rs.Name && a.Mode == approval.ModeOnce {
+				t.Errorf("mode=once approval should have been consumed, but still exists: %v", remaining)
+			}
+		}
+	}
+}
+
+// =============================================================================
+// Test: Mode=Always Approval Is NOT Consumed
+// =============================================================================
+
+func TestApprovalNotConsumed_ModeAlways(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "always-deploy")
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "always-rs", deploy)
+
+	// Add mode=always approval annotation
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	approvals := []approval.Approval{
+		{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, Mode: approval.ModeAlways},
+	}
+	approvalsJSON, _ := approval.MarshalApprovals(approvals)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.ApprovalsAnnotation] = approvalsJSON
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment with approval: %v", err)
+	}
+
+	// Set parent as ready AFTER annotation update
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch and find controller manager
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    ctrl.Log.WithName("test-always"),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog,
+			},
+		},
+	})
+
+	// Re-fetch RS
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get rs: %v", err)
+	}
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("always-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	if !resp.Allowed {
+		t.Errorf("expected allowed=true with valid approval")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify approval was NOT consumed (mode=always should persist)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment after handler: %v", err)
+	}
+	afterApprovals := deploy.GetAnnotations()[approval.ApprovalsAnnotation]
+	t.Logf("After handler - approvals: %s", afterApprovals)
+
+	if afterApprovals == "" {
+		t.Errorf("mode=always approval should NOT be consumed, but annotation is empty")
+	} else {
+		remaining, _ := approval.ParseApprovals(afterApprovals)
+		found := false
+		for _, a := range remaining {
+			if a.Name == rs.Name && a.Mode == approval.ModeAlways {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("mode=always approval should still exist, remaining: %v", remaining)
+		}
+	}
+}
+
+// =============================================================================
 // Test: Approval Pruning - Stale Approvals Removed
 // =============================================================================
 

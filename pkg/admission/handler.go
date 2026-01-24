@@ -145,6 +145,8 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 			warnings = append(warnings, fmt.Sprintf("[kausality] %s (would be blocked in enforce mode)", rejectMsg))
 		} else if approvalResult.Approved {
 			log.Info("DRIFT APPROVED", append(logFields, "approvalReason", approvalResult.Reason)...)
+			// Consume mode=once approvals and prune stale ones
+			h.consumeApproval(ctx, approvalResult, log)
 		} else {
 			driftMsg := "drift detected: no approval found for this mutation"
 			log.Info("DRIFT DETECTED - no approval found", logFields...)
@@ -339,17 +341,24 @@ func ValidatingWebhookFor(result *drift.DriftResult) admission.Response {
 	}
 }
 
+// approvalCheckResult extends approval.CheckResult with parent info for pruning.
+type approvalCheckResult struct {
+	approval.CheckResult
+	parent           client.Object
+	parentGeneration int64
+}
+
 // checkApprovals checks if the drift is approved or rejected.
-func (h *Handler) checkApprovals(ctx context.Context, driftResult *drift.DriftResult, obj client.Object, log logr.Logger) approval.CheckResult {
+func (h *Handler) checkApprovals(ctx context.Context, driftResult *drift.DriftResult, obj client.Object, log logr.Logger) approvalCheckResult {
 	if driftResult.ParentRef == nil {
-		return approval.CheckResult{Reason: "no parent to check approvals on"}
+		return approvalCheckResult{CheckResult: approval.CheckResult{Reason: "no parent to check approvals on"}}
 	}
 
 	// Fetch parent object to read approval annotations
 	parent, err := h.fetchParent(ctx, driftResult.ParentRef, obj.GetNamespace())
 	if err != nil {
 		log.Error(err, "failed to fetch parent for approval check")
-		return approval.CheckResult{Reason: "failed to fetch parent: " + err.Error()}
+		return approvalCheckResult{CheckResult: approval.CheckResult{Reason: "failed to fetch parent: " + err.Error()}}
 	}
 
 	// Build child reference
@@ -361,7 +370,83 @@ func (h *Handler) checkApprovals(ctx context.Context, driftResult *drift.DriftRe
 	}
 
 	// Check approvals on parent
-	return h.approvalChecker.Check(parent, childRef, parent.GetGeneration())
+	result := h.approvalChecker.Check(parent, childRef, parent.GetGeneration())
+	return approvalCheckResult{
+		CheckResult:      result,
+		parent:           parent,
+		parentGeneration: parent.GetGeneration(),
+	}
+}
+
+// consumeApproval removes a mode=once approval and prunes stale approvals from the parent.
+func (h *Handler) consumeApproval(ctx context.Context, result approvalCheckResult, log logr.Logger) {
+	if result.parent == nil || result.MatchedApproval == nil {
+		return
+	}
+
+	// Only consume mode=once approvals
+	mode := result.MatchedApproval.Mode
+	if mode == "" {
+		mode = approval.ModeOnce
+	}
+	if mode != approval.ModeOnce {
+		return
+	}
+
+	annotations := result.parent.GetAnnotations()
+	if annotations == nil {
+		return
+	}
+
+	approvalsStr := annotations[approval.ApprovalsAnnotation]
+	if approvalsStr == "" {
+		return
+	}
+
+	approvals, err := approval.ParseApprovals(approvalsStr)
+	if err != nil {
+		log.Error(err, "failed to parse approvals for pruning")
+		return
+	}
+
+	// Prune the consumed approval and any stale ones
+	pruner := approval.NewPruner()
+	pruneResult := pruner.Prune(approvals, result.MatchedApproval, result.parentGeneration)
+
+	if !pruneResult.Changed {
+		return
+	}
+
+	// Update the parent's annotations
+	newAnnotations := make(map[string]string)
+	for k, v := range annotations {
+		newAnnotations[k] = v
+	}
+
+	if len(pruneResult.Approvals) == 0 {
+		delete(newAnnotations, approval.ApprovalsAnnotation)
+	} else {
+		newApprovalsStr, err := approval.MarshalApprovals(pruneResult.Approvals)
+		if err != nil {
+			log.Error(err, "failed to marshal pruned approvals")
+			return
+		}
+		newAnnotations[approval.ApprovalsAnnotation] = newApprovalsStr
+	}
+
+	// Update the parent object
+	parentCopy := result.parent.DeepCopyObject().(client.Object)
+	parentCopy.SetAnnotations(newAnnotations)
+
+	if err := h.client.Update(ctx, parentCopy); err != nil {
+		log.Error(err, "failed to update parent with pruned approvals",
+			"removedCount", pruneResult.RemovedCount)
+		return
+	}
+
+	log.Info("pruned approvals from parent",
+		"removedCount", pruneResult.RemovedCount,
+		"remaining", len(pruneResult.Approvals))
 }
 
 // fetchParent fetches the parent object by reference.

@@ -520,14 +520,14 @@ This is inherent in distributed systems — cross-resource consistency is limite
 - Initialize request-trace on parent mutations
 - Propagate/replace trace through controller hierarchy
 
-### Phase 3: Per-Object Approval Annotation *(in progress)*
+### Phase 3: Per-Object Approval Annotation ✓
 - [x] Implement approval annotation parsing with modes (once, generation, always)
 - [x] Implement rejection annotation parsing
 - [x] Rejection checking (rejection wins over approval)
 - [x] Approval pruning logic (prune stale generations, consume once)
 - [x] Integration with admission handler (logging mode)
 - [x] Enforce mode (per-G/GR configuration via Helm)
-- [ ] Approval pruning via admission mutation (update annotations)
+- [x] Approval pruning via admission mutation (update annotations)
 
 ### Phase 4: ApprovalPolicy CRD and Slack Integration
 - Define and implement ApprovalPolicy CRD

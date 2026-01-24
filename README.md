@@ -272,12 +272,12 @@ kausality/
   - Trace causal chain through controller hierarchy
   - New origins for different actors, extend for controller hops
 
-- [ ] **Phase 3**: Per-object approval annotations *(in progress)*
+- [x] **Phase 3**: Per-object approval annotations
   - [x] Approval types (once, generation, always)
   - [x] Rejection support
   - [x] Approval checking in handler
   - [x] Enforce mode (per-G/GR configuration)
-  - [ ] Approval pruning on parent generation change
+  - [x] Approval pruning (mode=once consumed after use)
 
 - [ ] **Phase 4**: ApprovalPolicy CRD and Slack integration
 - [ ] **Phase 5**: TerraformApprovalPolicy for L0 controllers
