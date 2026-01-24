@@ -54,6 +54,10 @@ lint: golangci-lint ## Run golangci-lint linter.
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
 	$(GOLANGCI_LINT) run --fix
 
+.PHONY: imports
+imports: goimports ## Fix imports in Go files.
+	$(GOIMPORTS) -w .
+
 ##@ Build
 
 .PHONY: build
@@ -123,6 +127,7 @@ $(LOCALBIN):
 
 ## Tool Binaries
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
+GOIMPORTS ?= $(LOCALBIN)/goimports
 HELM ?= $(LOCALBIN)/helm
 SETUP_ENVTEST ?= $(LOCALBIN)/setup-envtest
 KO ?= $(LOCALBIN)/ko
@@ -140,6 +145,11 @@ golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	@test -s $(GOLANGCI_LINT) && $(GOLANGCI_LINT) version --format short | grep -q $(GOLANGCI_LINT_VERSION:v%=%) || \
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(LOCALBIN) $(GOLANGCI_LINT_VERSION)
+
+.PHONY: goimports
+goimports: $(GOIMPORTS) ## Download goimports locally if necessary.
+$(GOIMPORTS): $(LOCALBIN)
+	@test -s $(GOIMPORTS) || GOBIN=$(LOCALBIN) go install golang.org/x/tools/cmd/goimports@latest
 
 .PHONY: helm
 helm: $(HELM) ## Download helm locally if necessary.
