@@ -5,6 +5,10 @@
 <h1 align="center">Kausality</h1>
 
 <p align="center">
+  <em>"Every mutation needs a cause."</em>
+</p>
+
+<p align="center">
   <strong>Drift detection for Kubernetes controllers</strong>
 </p>
 
