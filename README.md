@@ -243,8 +243,11 @@ make run
 ### Testing
 
 ```bash
-# Run all tests
+# Run unit tests
 make test
+
+# Run envtest integration tests (real API server)
+make envtest
 
 # Run tests with verbose output
 make test-verbose

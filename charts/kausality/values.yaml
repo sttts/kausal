@@ -99,16 +99,34 @@ driftDetection:
 
   # Per-resource overrides (optional)
   # Allows different modes for different API groups/resources
+  # Supports namespace lists, namespace selectors, and object selectors
   # overrides:
+  #   # Enforce for deployments in production namespace
   #   - apiGroups: ["apps"]
   #     resources: ["deployments"]
+  #     namespaces: ["production"]
   #     mode: enforce
-  #   - apiGroups: ["example.com"]
-  #     resources: ["ekscluster"]
+  #
+  #   # Enforce for all resources in namespaces labeled critical=true
+  #   - apiGroups: ["apps"]
+  #     resources: ["*"]
+  #     namespaceSelector:
+  #       matchLabels:
+  #         critical: "true"
   #     mode: enforce
+  #
+  #   # Enforce for configmaps labeled protected=true
   #   - apiGroups: [""]
   #     resources: ["configmaps"]
-  #     mode: log  # Just log, don't enforce
+  #     objectSelector:
+  #       matchLabels:
+  #         protected: "true"
+  #     mode: enforce
+  #
+  #   # Log mode for custom resources
+  #   - apiGroups: ["example.com"]
+  #     resources: ["ekscluster"]
+  #     mode: log
   overrides: []
 
 # Logging configuration

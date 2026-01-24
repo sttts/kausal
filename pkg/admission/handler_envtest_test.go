@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -2434,6 +2436,548 @@ func TestCallback_ResolvedSentOnApproval(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Test: Namespace List Selector - Enforce Only In Specific Namespaces
+// =============================================================================
+
+func TestEnforceMode_NamespaceList(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a namespace with a unique name
+	testCounter++
+	nsName := fmt.Sprintf("ns-list-test-%d", testCounter)
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: nsName},
+	}
+	require.NoError(t, k8sClient.Create(ctx, ns))
+	defer k8sClient.Delete(ctx, ns)
+
+	// Create parent deployment in the new namespace
+	deploy := createDeploymentInNamespace(t, ctx, "ns-list-deploy", nsName)
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-list-rs", nsName, deploy)
+
+	// Set parent as ready (gen == obsGen) - drift scenario
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	deploy.Status.ObservedGeneration = deploy.Generation
+	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+
+	// Re-fetch to get managedFields
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler with enforce mode for SPECIFIC NAMESPACES
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog, // Default is log
+				Overrides: []config.DriftDetectionOverride{
+					{
+						APIGroups:  []string{"apps"},
+						Resources:  []string{"replicasets"},
+						Namespaces: []string{nsName}, // Only enforce in this namespace
+						Mode:       config.ModeEnforce,
+					},
+				},
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("ns-list-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, result=%v", resp.Allowed, resp.Result)
+
+	// Should be DENIED - namespace is in the enforce list
+	assert.False(t, resp.Allowed, "expected allowed=false for namespace in enforce list")
+}
+
+func TestEnforceMode_NamespaceList_NotInList(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a namespace that is NOT in the enforce list
+	testCounter++
+	nsName := fmt.Sprintf("ns-list-excluded-%d", testCounter)
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: nsName},
+	}
+	require.NoError(t, k8sClient.Create(ctx, ns))
+	defer k8sClient.Delete(ctx, ns)
+
+	// Create parent deployment in the new namespace
+	deploy := createDeploymentInNamespace(t, ctx, "ns-list-excluded-deploy", nsName)
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-list-excluded-rs", nsName, deploy)
+
+	// Set parent as ready (gen == obsGen) - drift scenario
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	deploy.Status.ObservedGeneration = deploy.Generation
+	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+
+	// Re-fetch to get managedFields
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler with enforce mode for DIFFERENT namespace
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog,
+				Overrides: []config.DriftDetectionOverride{
+					{
+						APIGroups:  []string{"apps"},
+						Resources:  []string{"replicasets"},
+						Namespaces: []string{"other-namespace"}, // NOT our namespace
+						Mode:       config.ModeEnforce,
+					},
+				},
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("ns-list-excluded-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, result=%v", resp.Allowed, resp.Result)
+
+	// Should be ALLOWED - namespace is NOT in the enforce list, falls back to log mode
+	assert.True(t, resp.Allowed, "expected allowed=true for namespace NOT in enforce list")
+}
+
+// =============================================================================
+// Test: Namespace Selector - Enforce In Namespaces With Labels
+// =============================================================================
+
+func TestEnforceMode_NamespaceSelector(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a namespace WITH the critical label
+	testCounter++
+	nsName := fmt.Sprintf("ns-selector-test-%d", testCounter)
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nsName,
+			Labels: map[string]string{"critical": "true"},
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, ns))
+	defer k8sClient.Delete(ctx, ns)
+
+	// Create parent deployment
+	deploy := createDeploymentInNamespace(t, ctx, "ns-selector-deploy", nsName)
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-selector-rs", nsName, deploy)
+
+	// Set parent as ready (gen == obsGen) - drift scenario
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	deploy.Status.ObservedGeneration = deploy.Generation
+	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+
+	// Re-fetch to get managedFields
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler with namespace selector
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog,
+				Overrides: []config.DriftDetectionOverride{
+					{
+						APIGroups: []string{"apps"},
+						Resources: []string{"replicasets"},
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"critical": "true"},
+						},
+						Mode: config.ModeEnforce,
+					},
+				},
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("ns-selector-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, result=%v", resp.Allowed, resp.Result)
+
+	// Should be DENIED - namespace has the critical=true label
+	assert.False(t, resp.Allowed, "expected allowed=false for namespace with matching selector")
+}
+
+func TestEnforceMode_NamespaceSelector_NoMatch(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a namespace WITHOUT the critical label
+	testCounter++
+	nsName := fmt.Sprintf("ns-selector-nomatch-%d", testCounter)
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nsName,
+			Labels: map[string]string{"env": "dev"}, // No critical label
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, ns))
+	defer k8sClient.Delete(ctx, ns)
+
+	// Create parent deployment
+	deploy := createDeploymentInNamespace(t, ctx, "ns-selector-nomatch-deploy", nsName)
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-selector-nomatch-rs", nsName, deploy)
+
+	// Set parent as ready (gen == obsGen) - drift scenario
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	deploy.Status.ObservedGeneration = deploy.Generation
+	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+
+	// Re-fetch to get managedFields
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler with namespace selector
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog,
+				Overrides: []config.DriftDetectionOverride{
+					{
+						APIGroups: []string{"apps"},
+						Resources: []string{"replicasets"},
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"critical": "true"},
+						},
+						Mode: config.ModeEnforce,
+					},
+				},
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("ns-selector-nomatch-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, result=%v", resp.Allowed, resp.Result)
+
+	// Should be ALLOWED - namespace does NOT have the critical=true label
+	assert.True(t, resp.Allowed, "expected allowed=true for namespace without matching selector")
+}
+
+// =============================================================================
+// Test: Object Selector - Enforce For Objects With Labels
+// =============================================================================
+
+func TestEnforceMode_ObjectSelector(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment WITH protected label
+	deploy := createDeploymentWithLabels(t, ctx, "obj-selector-deploy", map[string]string{"protected": "true"})
+
+	// Create child ReplicaSet with labels
+	rs := createReplicaSetWithOwnerAndLabels(t, ctx, "obj-selector-rs", deploy, map[string]string{"protected": "true"})
+
+	// Set parent as ready (gen == obsGen) - drift scenario
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	deploy.Status.ObservedGeneration = deploy.Generation
+	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+
+	// Re-fetch to get managedFields
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler with object selector
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog,
+				Overrides: []config.DriftDetectionOverride{
+					{
+						APIGroups: []string{"apps"},
+						Resources: []string{"replicasets"},
+						ObjectSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"protected": "true"},
+						},
+						Mode: config.ModeEnforce,
+					},
+				},
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("obj-selector-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, result=%v", resp.Allowed, resp.Result)
+
+	// Should be DENIED - object has the protected=true label
+	assert.False(t, resp.Allowed, "expected allowed=false for object with matching selector")
+}
+
+func TestEnforceMode_ObjectSelector_NoMatch(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment WITHOUT protected label
+	deploy := createDeploymentWithLabels(t, ctx, "obj-selector-nomatch-deploy", map[string]string{"tier": "frontend"})
+
+	// Create child ReplicaSet WITHOUT protected label
+	rs := createReplicaSetWithOwnerAndLabels(t, ctx, "obj-selector-nomatch-rs", deploy, map[string]string{"tier": "frontend"})
+
+	// Set parent as ready (gen == obsGen) - drift scenario
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	deploy.Status.ObservedGeneration = deploy.Generation
+	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+
+	// Re-fetch to get managedFields
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler with object selector
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog,
+				Overrides: []config.DriftDetectionOverride{
+					{
+						APIGroups: []string{"apps"},
+						Resources: []string{"replicasets"},
+						ObjectSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"protected": "true"},
+						},
+						Mode: config.ModeEnforce,
+					},
+				},
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("obj-selector-nomatch-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, result=%v", resp.Allowed, resp.Result)
+
+	// Should be ALLOWED - object does NOT have the protected=true label
+	assert.True(t, resp.Allowed, "expected allowed=true for object without matching selector")
+}
+
 func containsSubstring(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
 		(len(s) > 0 && len(substr) > 0 && findSubstr(s, substr)))
@@ -2538,6 +3082,199 @@ func createReplicaSetWithOwner(t *testing.T, ctx context.Context, namePrefix str
 	}
 
 	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get replicaset: %v", err)
+	}
+
+	return rs
+}
+
+func createDeploymentInNamespace(t *testing.T, ctx context.Context, namePrefix string, namespace string) *appsv1.Deployment {
+	t.Helper()
+	testCounter++
+
+	replicas := int32(1)
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-%d", namePrefix, testCounter),
+			Namespace: namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": namePrefix},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": namePrefix},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "test", Image: "nginx:latest"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := k8sClient.Create(ctx, deploy); err != nil {
+		t.Fatalf("failed to create deployment: %v", err)
+	}
+
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	return deploy
+}
+
+func createReplicaSetWithOwnerInNamespace(t *testing.T, ctx context.Context, namePrefix string, namespace string, owner *appsv1.Deployment) *appsv1.ReplicaSet {
+	t.Helper()
+	testCounter++
+
+	trueVal := true
+	replicas := int32(1)
+
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-%d", namePrefix, testCounter),
+			Namespace: namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       owner.Name,
+					UID:        owner.UID,
+					Controller: &trueVal,
+				},
+			},
+		},
+		Spec: appsv1.ReplicaSetSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": namePrefix},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": namePrefix},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "test", Image: "nginx:latest"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := k8sClient.Create(ctx, rs); err != nil {
+		t.Fatalf("failed to create replicaset: %v", err)
+	}
+
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get replicaset: %v", err)
+	}
+
+	return rs
+}
+
+func createDeploymentWithLabels(t *testing.T, ctx context.Context, namePrefix string, labels map[string]string) *appsv1.Deployment {
+	t.Helper()
+	testCounter++
+
+	replicas := int32(1)
+
+	// Merge with app label
+	allLabels := map[string]string{"app": namePrefix}
+	for k, v := range labels {
+		allLabels[k] = v
+	}
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-%d", namePrefix, testCounter),
+			Namespace: testNS,
+			Labels:    allLabels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": namePrefix},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": namePrefix},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "test", Image: "nginx:latest"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := k8sClient.Create(ctx, deploy); err != nil {
+		t.Fatalf("failed to create deployment: %v", err)
+	}
+
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	return deploy
+}
+
+func createReplicaSetWithOwnerAndLabels(t *testing.T, ctx context.Context, namePrefix string, owner *appsv1.Deployment, labels map[string]string) *appsv1.ReplicaSet {
+	t.Helper()
+	testCounter++
+
+	trueVal := true
+	replicas := int32(1)
+
+	// Merge with app label
+	allLabels := map[string]string{"app": namePrefix}
+	for k, v := range labels {
+		allLabels[k] = v
+	}
+
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-%d", namePrefix, testCounter),
+			Namespace: testNS,
+			Labels:    allLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       owner.Name,
+					UID:        owner.UID,
+					Controller: &trueVal,
+				},
+			},
+		},
+		Spec: appsv1.ReplicaSetSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": namePrefix},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": namePrefix},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "test", Image: "nginx:latest"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := k8sClient.Create(ctx, rs); err != nil {
+		t.Fatalf("failed to create replicaset: %v", err)
+	}
+
 	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get replicaset: %v", err)
 	}

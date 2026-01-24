@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -383,6 +384,318 @@ func TestOverrideMatches(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.override.Matches(tt.gvk)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestOverrideMatchesContext_Namespaces(t *testing.T) {
+	tests := []struct {
+		name     string
+		override DriftDetectionOverride
+		ctx      ResourceContext
+		want     bool
+	}{
+		{
+			name: "namespace in list",
+			override: DriftDetectionOverride{
+				APIGroups:  []string{"apps"},
+				Resources:  []string{"deployments"},
+				Namespaces: []string{"production", "staging"},
+				Mode:       ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:       schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace: "production",
+			},
+			want: true,
+		},
+		{
+			name: "namespace not in list",
+			override: DriftDetectionOverride{
+				APIGroups:  []string{"apps"},
+				Resources:  []string{"deployments"},
+				Namespaces: []string{"production", "staging"},
+				Mode:       ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:       schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace: "development",
+			},
+			want: false,
+		},
+		{
+			name: "empty namespace list matches all",
+			override: DriftDetectionOverride{
+				APIGroups:  []string{"apps"},
+				Resources:  []string{"deployments"},
+				Namespaces: []string{},
+				Mode:       ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:       schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace: "any-namespace",
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.override.MatchesContext(tt.ctx)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestOverrideMatchesContext_NamespaceSelector(t *testing.T) {
+	tests := []struct {
+		name     string
+		override DriftDetectionOverride
+		ctx      ResourceContext
+		want     bool
+	}{
+		{
+			name: "namespace labels match selector",
+			override: DriftDetectionOverride{
+				APIGroups: []string{"apps"},
+				Resources: []string{"deployments"},
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"env": "production"},
+				},
+				Mode: ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:             schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace:       "my-namespace",
+				NamespaceLabels: map[string]string{"env": "production", "team": "platform"},
+			},
+			want: true,
+		},
+		{
+			name: "namespace labels do not match selector",
+			override: DriftDetectionOverride{
+				APIGroups: []string{"apps"},
+				Resources: []string{"deployments"},
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"env": "production"},
+				},
+				Mode: ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:             schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace:       "my-namespace",
+				NamespaceLabels: map[string]string{"env": "staging"},
+			},
+			want: false,
+		},
+		{
+			name: "namespace selector with matchExpressions",
+			override: DriftDetectionOverride{
+				APIGroups: []string{"apps"},
+				Resources: []string{"deployments"},
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{
+							Key:      "env",
+							Operator: metav1.LabelSelectorOpIn,
+							Values:   []string{"production", "staging"},
+						},
+					},
+				},
+				Mode: ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:             schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace:       "my-namespace",
+				NamespaceLabels: map[string]string{"env": "staging"},
+			},
+			want: true,
+		},
+		{
+			name: "nil namespace selector matches all",
+			override: DriftDetectionOverride{
+				APIGroups:         []string{"apps"},
+				Resources:         []string{"deployments"},
+				NamespaceSelector: nil,
+				Mode:              ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:             schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace:       "my-namespace",
+				NamespaceLabels: map[string]string{},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.override.MatchesContext(tt.ctx)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestOverrideMatchesContext_ObjectSelector(t *testing.T) {
+	tests := []struct {
+		name     string
+		override DriftDetectionOverride
+		ctx      ResourceContext
+		want     bool
+	}{
+		{
+			name: "object labels match selector",
+			override: DriftDetectionOverride{
+				APIGroups: []string{"apps"},
+				Resources: []string{"deployments"},
+				ObjectSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "critical"},
+				},
+				Mode: ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:          schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace:    "default",
+				ObjectLabels: map[string]string{"app": "critical", "version": "v1"},
+			},
+			want: true,
+		},
+		{
+			name: "object labels do not match selector",
+			override: DriftDetectionOverride{
+				APIGroups: []string{"apps"},
+				Resources: []string{"deployments"},
+				ObjectSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "critical"},
+				},
+				Mode: ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:          schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace:    "default",
+				ObjectLabels: map[string]string{"app": "normal"},
+			},
+			want: false,
+		},
+		{
+			name: "nil object selector matches all",
+			override: DriftDetectionOverride{
+				APIGroups:      []string{"apps"},
+				Resources:      []string{"deployments"},
+				ObjectSelector: nil,
+				Mode:           ModeEnforce,
+			},
+			ctx: ResourceContext{
+				GVK:          schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace:    "default",
+				ObjectLabels: map[string]string{"any": "label"},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.override.MatchesContext(tt.ctx)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestGetModeForResourceContext(t *testing.T) {
+	cfg := &Config{
+		DriftDetection: DriftDetectionConfig{
+			DefaultMode: ModeLog,
+			Overrides: []DriftDetectionOverride{
+				{
+					APIGroups:  []string{"apps"},
+					Resources:  []string{"deployments"},
+					Namespaces: []string{"production"},
+					Mode:       ModeEnforce,
+				},
+				{
+					APIGroups: []string{"apps"},
+					Resources: []string{"statefulsets"},
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"critical": "true"},
+					},
+					Mode: ModeEnforce,
+				},
+				{
+					APIGroups: []string{""},
+					Resources: []string{"configmaps"},
+					ObjectSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"protected": "true"},
+					},
+					Mode: ModeEnforce,
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		ctx      ResourceContext
+		wantMode string
+	}{
+		{
+			name: "deployment in production namespace",
+			ctx: ResourceContext{
+				GVK:       schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace: "production",
+			},
+			wantMode: ModeEnforce,
+		},
+		{
+			name: "deployment in staging namespace",
+			ctx: ResourceContext{
+				GVK:       schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				Namespace: "staging",
+			},
+			wantMode: ModeLog,
+		},
+		{
+			name: "statefulset in critical namespace",
+			ctx: ResourceContext{
+				GVK:             schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "StatefulSet"},
+				Namespace:       "my-ns",
+				NamespaceLabels: map[string]string{"critical": "true"},
+			},
+			wantMode: ModeEnforce,
+		},
+		{
+			name: "statefulset in non-critical namespace",
+			ctx: ResourceContext{
+				GVK:             schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "StatefulSet"},
+				Namespace:       "my-ns",
+				NamespaceLabels: map[string]string{"critical": "false"},
+			},
+			wantMode: ModeLog,
+		},
+		{
+			name: "protected configmap",
+			ctx: ResourceContext{
+				GVK:          schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"},
+				Namespace:    "default",
+				ObjectLabels: map[string]string{"protected": "true"},
+			},
+			wantMode: ModeEnforce,
+		},
+		{
+			name: "non-protected configmap",
+			ctx: ResourceContext{
+				GVK:          schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"},
+				Namespace:    "default",
+				ObjectLabels: map[string]string{"protected": "false"},
+			},
+			wantMode: ModeLog,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mode := cfg.GetModeForResourceContext(tt.ctx)
+			assert.Equal(t, tt.wantMode, mode)
 		})
 	}
 }

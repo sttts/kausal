@@ -128,10 +128,28 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	// Track warnings to add to the response
 	var warnings []string
 
-	// Determine enforce mode for this resource
+	// Build resource context for mode matching
 	gvk := obj.GetObjectKind().GroupVersionKind()
-	enforceMode := h.config.IsEnforceMode(gvk)
-	driftMode := h.config.GetModeForResource(gvk)
+	resourceCtx := config.ResourceContext{
+		GVK:          gvk,
+		Namespace:    obj.GetNamespace(),
+		ObjectLabels: obj.GetLabels(),
+	}
+
+	// Fetch namespace labels if needed for selector matching
+	if obj.GetNamespace() != "" {
+		nsLabels, err := h.getNamespaceLabels(ctx, obj.GetNamespace())
+		if err != nil {
+			log.V(1).Info("failed to get namespace labels", "error", err)
+			// Continue without namespace labels - selectors won't match
+		} else {
+			resourceCtx.NamespaceLabels = nsLabels
+		}
+	}
+
+	// Determine enforce mode for this resource
+	enforceMode := h.config.IsEnforceModeContext(resourceCtx)
+	driftMode := h.config.GetModeForResourceContext(resourceCtx)
 
 	if driftResult.DriftDetected {
 		// Check for approvals when drift is detected
@@ -633,4 +651,15 @@ func computeSpecDiff(req admission.Request) []byte {
 		return req.Object.Raw
 	}
 	return diffBytes
+}
+
+// getNamespaceLabels fetches labels from a namespace.
+func (h *Handler) getNamespaceLabels(ctx context.Context, namespace string) (map[string]string, error) {
+	ns := &unstructured.Unstructured{}
+	ns.SetAPIVersion("v1")
+	ns.SetKind("Namespace")
+	if err := h.client.Get(ctx, client.ObjectKey{Name: namespace}, ns); err != nil {
+		return nil, err
+	}
+	return ns.GetLabels(), nil
 }

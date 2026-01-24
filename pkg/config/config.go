@@ -8,6 +8,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -35,8 +37,32 @@ type DriftDetectionOverride struct {
 	// "*" matches all resources in the API groups.
 	Resources []string `yaml:"resources"`
 
+	// Namespaces specifies which namespaces this override applies to.
+	// Empty list matches all namespaces.
+	Namespaces []string `yaml:"namespaces,omitempty"`
+
+	// NamespaceSelector selects namespaces by labels.
+	// Empty selector matches all namespaces.
+	NamespaceSelector *metav1.LabelSelector `yaml:"namespaceSelector,omitempty"`
+
+	// ObjectSelector selects objects by labels.
+	// Empty selector matches all objects.
+	ObjectSelector *metav1.LabelSelector `yaml:"objectSelector,omitempty"`
+
 	// Mode is the drift detection mode for matching resources ("log" or "enforce").
 	Mode string `yaml:"mode"`
+}
+
+// ResourceContext provides context for mode matching.
+type ResourceContext struct {
+	// GVK is the GroupVersionKind of the resource.
+	GVK schema.GroupVersionKind
+	// Namespace is the namespace of the resource.
+	Namespace string
+	// ObjectLabels are the labels on the resource.
+	ObjectLabels map[string]string
+	// NamespaceLabels are the labels on the namespace.
+	NamespaceLabels map[string]string
 }
 
 // Mode constants.
@@ -92,10 +118,16 @@ func (c *Config) Validate() error {
 }
 
 // GetModeForResource returns the drift detection mode for a specific resource.
+// Deprecated: Use GetModeForResourceContext for full selector support.
 func (c *Config) GetModeForResource(gvk schema.GroupVersionKind) string {
+	return c.GetModeForResourceContext(ResourceContext{GVK: gvk})
+}
+
+// GetModeForResourceContext returns the drift detection mode using full context.
+func (c *Config) GetModeForResourceContext(ctx ResourceContext) string {
 	// Check overrides first (first match wins)
 	for _, override := range c.DriftDetection.Overrides {
-		if override.Matches(gvk) {
+		if override.MatchesContext(ctx) {
 			return override.Mode
 		}
 	}
@@ -104,33 +136,101 @@ func (c *Config) GetModeForResource(gvk schema.GroupVersionKind) string {
 }
 
 // IsEnforceMode returns true if the given resource should be in enforce mode.
+// Deprecated: Use IsEnforceModeContext for full selector support.
 func (c *Config) IsEnforceMode(gvk schema.GroupVersionKind) bool {
 	return c.GetModeForResource(gvk) == ModeEnforce
 }
 
+// IsEnforceModeContext returns true if the given resource context should be in enforce mode.
+func (c *Config) IsEnforceModeContext(ctx ResourceContext) bool {
+	return c.GetModeForResourceContext(ctx) == ModeEnforce
+}
+
 // Matches returns true if this override applies to the given GVK.
+// Deprecated: Use MatchesContext for full selector support.
 func (o *DriftDetectionOverride) Matches(gvk schema.GroupVersionKind) bool {
+	return o.MatchesContext(ResourceContext{GVK: gvk})
+}
+
+// MatchesContext returns true if this override applies to the given context.
+func (o *DriftDetectionOverride) MatchesContext(ctx ResourceContext) bool {
 	// Check API group
-	groupMatches := false
-	for _, g := range o.APIGroups {
-		if g == gvk.Group {
-			groupMatches = true
-			break
-		}
-	}
-	if !groupMatches {
+	if !o.matchesAPIGroup(ctx.GVK.Group) {
 		return false
 	}
 
-	// Check resource (convert Kind to resource name - lowercase plural)
-	resource := strings.ToLower(gvk.Kind) + "s"
+	// Check resource
+	if !o.matchesResource(ctx.GVK.Kind) {
+		return false
+	}
+
+	// Check namespace name list
+	if len(o.Namespaces) > 0 && !o.matchesNamespace(ctx.Namespace) {
+		return false
+	}
+
+	// Check namespace selector
+	if o.NamespaceSelector != nil && !o.matchesNamespaceSelector(ctx.NamespaceLabels) {
+		return false
+	}
+
+	// Check object selector
+	if o.ObjectSelector != nil && !o.matchesObjectSelector(ctx.ObjectLabels) {
+		return false
+	}
+
+	return true
+}
+
+func (o *DriftDetectionOverride) matchesAPIGroup(group string) bool {
+	for _, g := range o.APIGroups {
+		if g == group {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *DriftDetectionOverride) matchesResource(kind string) bool {
+	// Convert Kind to resource name - lowercase plural
+	resource := strings.ToLower(kind) + "s"
 	for _, r := range o.Resources {
 		if r == "*" || r == resource {
 			return true
 		}
 	}
-
 	return false
+}
+
+func (o *DriftDetectionOverride) matchesNamespace(namespace string) bool {
+	for _, ns := range o.Namespaces {
+		if ns == namespace {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *DriftDetectionOverride) matchesNamespaceSelector(nsLabels map[string]string) bool {
+	if o.NamespaceSelector == nil {
+		return true
+	}
+	selector, err := metav1.LabelSelectorAsSelector(o.NamespaceSelector)
+	if err != nil {
+		return false
+	}
+	return selector.Matches(labels.Set(nsLabels))
+}
+
+func (o *DriftDetectionOverride) matchesObjectSelector(objLabels map[string]string) bool {
+	if o.ObjectSelector == nil {
+		return true
+	}
+	selector, err := metav1.LabelSelectorAsSelector(o.ObjectSelector)
+	if err != nil {
+		return false
+	}
+	return selector.Matches(labels.Set(objLabels))
 }
 
 func isValidMode(mode string) bool {
