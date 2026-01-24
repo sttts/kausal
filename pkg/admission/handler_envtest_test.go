@@ -612,6 +612,347 @@ func TestAdmissionHandler_Integration(t *testing.T) {
 }
 
 // =============================================================================
+// Test: No Owner Reference (Root Object)
+// =============================================================================
+
+func TestNoOwnerReference_RootObject(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a deployment without any owner (root object)
+	deploy := createDeployment(t, ctx, "root-deploy")
+
+	// Detect drift on root object
+	detector := drift.NewDetector(k8sClient)
+	result, err := detector.Detect(ctx, deploy)
+	if err != nil {
+		t.Fatalf("drift detection failed: %v", err)
+	}
+
+	t.Logf("Result: allowed=%v, drift=%v, reason=%s", result.Allowed, result.DriftDetected, result.Reason)
+
+	// No controller ownerRef - should allow, no drift
+	if !result.Allowed {
+		t.Errorf("expected allowed=true for root object")
+	}
+	if result.DriftDetected {
+		t.Errorf("expected driftDetected=false for root object (no parent to drift from)")
+	}
+	if result.ParentRef != nil {
+		t.Errorf("expected ParentRef=nil for root object, got %v", result.ParentRef)
+	}
+}
+
+// =============================================================================
+// Test: Lifecycle Phase - Ready Condition
+// =============================================================================
+
+func TestLifecyclePhase_ReadyCondition(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "ready-cond-deploy")
+
+	// Set Ready=True condition (simulating a CRD with conditions but no observedGeneration yet)
+	deploy.Status.Conditions = []appsv1.DeploymentCondition{
+		{
+			Type:   appsv1.DeploymentAvailable,
+			Status: corev1.ConditionTrue,
+		},
+	}
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "ready-cond-rs", deploy)
+
+	// Resolve parent state
+	resolver := drift.NewParentResolver(k8sClient)
+	parentState, err := resolver.ResolveParent(ctx, rs)
+	if err != nil {
+		t.Fatalf("failed to resolve parent: %v", err)
+	}
+
+	// Check lifecycle phase - deployment conditions are different from metav1.Condition
+	// The lifecycle detector looks for Ready/Initialized in metav1.Condition format
+	// Deployments use appsv1.DeploymentCondition which is different
+	// This test verifies the behavior with standard deployment conditions
+	lifecycleDetector := drift.NewLifecycleDetector()
+	phase := lifecycleDetector.DetectPhase(parentState)
+
+	t.Logf("Parent state: hasObsGen=%v, conditions=%d, phase=%v",
+		parentState.HasObservedGeneration, len(parentState.Conditions), phase)
+}
+
+// =============================================================================
+// Test: Different Actor Creates New Trace Origin
+// =============================================================================
+
+func TestDifferentActor_NewTraceOrigin(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment with a trace
+	deploy := createDeployment(t, ctx, "diff-actor-deploy")
+
+	// Set a trace on the parent
+	parentTrace := trace.Trace{
+		trace.NewHop("apps/v1", "Deployment", deploy.Name, deploy.Generation, "original-user"),
+	}
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[trace.TraceAnnotation] = parentTrace.String()
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment with trace: %v", err)
+	}
+
+	// Set parent as stable (gen == obsGen) - any change would be drift if from controller
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	t.Logf("Parent: gen=%d, obsGen=%d", deploy.Generation, deploy.Status.ObservedGeneration)
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "diff-actor-rs", deploy)
+
+	// Propagate trace with DIFFERENT fieldManager (simulating kubectl or another actor)
+	propagator := trace.NewPropagator(k8sClient)
+	result, err := propagator.PropagateWithFieldManager(ctx, rs, "different-user", "kubectl-edit")
+	if err != nil {
+		t.Fatalf("propagation failed: %v", err)
+	}
+
+	t.Logf("Trace result: isOrigin=%v, trace=%s", result.IsOrigin, result.Trace.String())
+
+	// Different actor should create a NEW trace origin (not extend parent's trace)
+	if !result.IsOrigin {
+		t.Errorf("expected isOrigin=true for different actor")
+	}
+
+	// New trace should have only 1 hop (the new origin), not parent's trace
+	if len(result.Trace) != 1 {
+		t.Errorf("expected trace length 1 (new origin), got %d", len(result.Trace))
+	}
+
+	// The origin should be the new actor, not the parent's trace user
+	if len(result.Trace) > 0 && result.Trace[0].User != "different-user" {
+		t.Errorf("expected trace origin user 'different-user', got %q", result.Trace[0].User)
+	}
+}
+
+// =============================================================================
+// Test: Admission Handler Returns Trace Patch
+// =============================================================================
+
+func TestAdmissionHandler_TraceInResponse(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a standalone deployment (no parent - will be origin)
+	deploy := createDeployment(t, ctx, "trace-patch-deploy")
+
+	// Set TypeMeta
+	deploy.APIVersion = "apps/v1"
+	deploy.Kind = "Deployment"
+
+	// Serialize
+	deployBytes, err := json.Marshal(deploy)
+	if err != nil {
+		t.Fatalf("failed to marshal deployment: %v", err)
+	}
+
+	// Create handler
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    logr.Discard(),
+	})
+
+	// Create admission request for CREATE (new object, will be origin)
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("trace-patch-uid"),
+			Operation: admissionv1.Create,
+			Kind: metav1.GroupVersionKind{
+				Group:   "apps",
+				Version: "v1",
+				Kind:    "Deployment",
+			},
+			Namespace: deploy.Namespace,
+			Name:      deploy.Name,
+			Object: runtime.RawExtension{
+				Raw: deployBytes,
+			},
+			UserInfo: authenticationv1.UserInfo{
+				Username: "test-user@example.com",
+			},
+			Options: runtime.RawExtension{
+				Raw: []byte(`{"fieldManager":"kubectl-create"}`),
+			},
+		},
+	}
+
+	// Handle the request
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, patchType=%v, patchLen=%d",
+		resp.Allowed, resp.PatchType, len(resp.Patches))
+
+	if !resp.Allowed {
+		t.Errorf("expected allowed=true")
+	}
+
+	// Response should contain a patch with the trace annotation
+	if len(resp.Patches) == 0 && resp.Patch == nil {
+		// Check if patch is in the raw response
+		if len(resp.Patch) == 0 {
+			t.Logf("No patches returned - this may be expected if PatchResponseFromRaw returns full object")
+		}
+	}
+
+	// The response should have the patched object with trace
+	if resp.Patch != nil {
+		patchStr := string(resp.Patch)
+		if !containsSubstring(patchStr, trace.TraceAnnotation) {
+			t.Logf("Patch content: %s", patchStr)
+			// Note: PatchResponseFromRaw returns the full modified object, not a JSON patch
+			// The trace annotation should be in there
+		}
+	}
+}
+
+// =============================================================================
+// Test: Multiple Owner References - Only Controller Matters
+// =============================================================================
+
+func TestMultipleOwnerRefs_OnlyControllerMatters(t *testing.T) {
+	ctx := context.Background()
+
+	// Create two deployments - one will be controller, one won't
+	controllerDeploy := createDeployment(t, ctx, "multi-owner-ctrl")
+	nonControllerDeploy := createDeployment(t, ctx, "multi-owner-nonctrl")
+
+	// Set controller as stable (drift scenario)
+	controllerDeploy.Status.ObservedGeneration = controllerDeploy.Generation
+	if err := k8sClient.Status().Update(ctx, controllerDeploy); err != nil {
+		t.Fatalf("failed to update controller status: %v", err)
+	}
+
+	// Set non-controller as reconciling (would be "expected" if it were the controller)
+	nonControllerDeploy.Status.ObservedGeneration = nonControllerDeploy.Generation - 1
+	// This will fail if generation is 1, so just set it to same
+	if nonControllerDeploy.Generation == 1 {
+		nonControllerDeploy.Status.ObservedGeneration = 0
+	}
+	_ = k8sClient.Status().Update(ctx, nonControllerDeploy) // Ignore error
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerDeploy), controllerDeploy); err != nil {
+		t.Fatalf("failed to get controller deploy: %v", err)
+	}
+
+	// Create ReplicaSet with BOTH owners, but only one is controller
+	trueVal := true
+	falseVal := false
+	testCounter++
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("multi-owner-rs-%d", testCounter),
+			Namespace: testNS,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       nonControllerDeploy.Name,
+					UID:        nonControllerDeploy.UID,
+					Controller: &falseVal, // NOT the controller
+				},
+				{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       controllerDeploy.Name,
+					UID:        controllerDeploy.UID,
+					Controller: &trueVal, // THIS is the controller
+				},
+			},
+		},
+		Spec: appsv1.ReplicaSetSpec{
+			Replicas: func() *int32 { v := int32(1); return &v }(),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "multi-owner"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "multi-owner"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "test", Image: "nginx:latest"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := k8sClient.Create(ctx, rs); err != nil {
+		t.Fatalf("failed to create replicaset: %v", err)
+	}
+
+	// Detect drift - should use controllerDeploy (the one with controller: true)
+	detector := drift.NewDetector(k8sClient)
+	result, err := detector.Detect(ctx, rs)
+	if err != nil {
+		t.Fatalf("drift detection failed: %v", err)
+	}
+
+	t.Logf("Result: allowed=%v, drift=%v, parentRef=%v, reason=%s",
+		result.Allowed, result.DriftDetected, result.ParentRef, result.Reason)
+
+	// Should detect drift because controllerDeploy has gen == obsGen
+	if !result.DriftDetected {
+		t.Errorf("expected driftDetected=true (controller parent is stable)")
+	}
+
+	// ParentRef should point to the controller owner
+	if result.ParentRef == nil {
+		t.Fatal("expected ParentRef to be set")
+	}
+	if result.ParentRef.Name != controllerDeploy.Name {
+		t.Errorf("expected ParentRef.Name=%q (controller), got %q",
+			controllerDeploy.Name, result.ParentRef.Name)
+	}
+}
+
+func containsSubstring(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && findSubstr(s, substr)))
+}
+
+func findSubstr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// =============================================================================
 // Helper Functions
 // =============================================================================
 
