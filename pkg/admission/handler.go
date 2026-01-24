@@ -1,12 +1,14 @@
-// Package admission provides admission handling for drift detection.
+// Package admission provides admission handling for drift detection and tracing.
 package admission
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/go-logr/logr"
+
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -16,14 +18,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/kausality-io/kausality/pkg/drift"
+	"github.com/kausality-io/kausality/pkg/trace"
 )
 
-// Handler handles admission requests for drift detection.
+// Handler handles admission requests for drift detection and tracing.
 type Handler struct {
-	client   client.Client
-	decoder  admission.Decoder
-	detector *drift.Detector
-	log      logr.Logger
+	client     client.Client
+	decoder    admission.Decoder
+	detector   *drift.Detector
+	propagator *trace.Propagator
+	log        logr.Logger
 }
 
 // Config configures the admission handler.
@@ -35,29 +39,30 @@ type Config struct {
 // NewHandler creates a new admission Handler.
 func NewHandler(cfg Config) *Handler {
 	return &Handler{
-		client:   cfg.Client,
-		detector: drift.NewDetector(cfg.Client),
-		log:      cfg.Log.WithName("drift-admission"),
+		client:     cfg.Client,
+		detector:   drift.NewDetector(cfg.Client),
+		propagator: trace.NewPropagator(cfg.Client),
+		log:        cfg.Log.WithName("kausality-admission"),
 	}
 }
 
-// Handle processes an admission request for drift detection.
+// Handle processes an admission request for drift detection and tracing.
 func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := h.log.WithValues(
 		"operation", req.Operation,
 		"kind", req.Kind.String(),
 		"namespace", req.Namespace,
 		"name", req.Name,
+		"user", req.UserInfo.Username,
 	)
 
-	// Only handle CREATE, UPDATE, DELETE
-	if req.Operation != admissionv1.Create &&
-		req.Operation != admissionv1.Update &&
-		req.Operation != admissionv1.Delete {
-		return admission.Allowed("operation not relevant for drift detection")
+	// Handle CREATE, UPDATE, and DELETE (DELETE just sets deletionTimestamp)
+	if req.Operation != admissionv1.Create && req.Operation != admissionv1.Update && req.Operation != admissionv1.Delete {
+		return admission.Allowed("operation not relevant for tracing")
 	}
 
 	// For UPDATE, check if spec changed - ignore status/metadata-only changes
+	// DELETE always traces (sets deletionTimestamp, which is significant even though it's metadata)
 	if req.Operation == admissionv1.Update {
 		specChanged, err := h.hasSpecChanged(req)
 		if err != nil {
@@ -65,7 +70,7 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 			return admission.Errored(http.StatusBadRequest, fmt.Errorf("failed to check spec change: %w", err))
 		}
 		if !specChanged {
-			log.V(2).Info("no spec change, skipping drift detection")
+			log.V(2).Info("no spec change, skipping")
 			return admission.Allowed("no spec change")
 		}
 	}
@@ -78,37 +83,95 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	}
 
 	// Detect drift
-	result, err := h.detector.Detect(ctx, obj)
+	driftResult, err := h.detector.Detect(ctx, obj)
 	if err != nil {
 		log.Error(err, "drift detection failed")
 		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("drift detection failed: %w", err))
 	}
 
-	// Log the result
+	// Log drift detection result
 	logFields := []interface{}{
-		"allowed", result.Allowed,
-		"reason", result.Reason,
-		"driftDetected", result.DriftDetected,
-		"lifecyclePhase", result.LifecyclePhase,
+		"driftDetected", driftResult.DriftDetected,
+		"lifecyclePhase", driftResult.LifecyclePhase,
 	}
-	if result.ParentRef != nil {
+	if driftResult.ParentRef != nil {
 		logFields = append(logFields,
-			"parentKind", result.ParentRef.Kind,
-			"parentName", result.ParentRef.Name,
+			"parentKind", driftResult.ParentRef.Kind,
+			"parentName", driftResult.ParentRef.Name,
 		)
-		if result.ParentRef.Namespace != "" {
-			logFields = append(logFields, "parentNamespace", result.ParentRef.Namespace)
-		}
 	}
 
-	if result.DriftDetected {
+	if driftResult.DriftDetected {
 		log.Info("DRIFT DETECTED - would be blocked in enforcement mode", logFields...)
 	} else {
 		log.V(1).Info("drift check passed", logFields...)
 	}
 
-	// Phase 1: always allow, logging only
-	return admission.Allowed(result.Reason)
+	// Propagate trace
+	traceResult, err := h.propagator.Propagate(ctx, obj, req.UserInfo.Username)
+	if err != nil {
+		log.Error(err, "trace propagation failed")
+		// Don't fail the request on trace errors - just log and continue
+		return admission.Allowed(driftResult.Reason)
+	}
+
+	// Log trace info
+	if traceResult.IsOrigin {
+		log.Info("trace: new origin", "traceLen", len(traceResult.Trace))
+	} else {
+		log.V(1).Info("trace: extended", "traceLen", len(traceResult.Trace), "parentTraceLen", len(traceResult.ParentTrace))
+	}
+
+	// For DELETE, we can't patch (no new object), just allow after logging
+	if req.Operation == admissionv1.Delete {
+		log.V(1).Info("delete operation traced", "trace", traceResult.Trace.String())
+		return admission.Allowed(driftResult.Reason)
+	}
+
+	// Create patch to add/update trace annotation
+	patch, err := createTracePatch(obj, traceResult.Trace)
+	if err != nil {
+		log.Error(err, "failed to create trace patch")
+		return admission.Allowed(driftResult.Reason)
+	}
+
+	return admission.PatchResponseFromRaw(req.Object.Raw, patch)
+}
+
+// createTracePatch creates a JSON patch to set the trace annotation.
+func createTracePatch(obj client.Object, t trace.Trace) ([]byte, error) {
+	// Get existing annotations
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+
+	// Set trace annotation
+	annotations[trace.TraceAnnotation] = t.String()
+
+	// Create patched object
+	unstrObj, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		return nil, fmt.Errorf("expected *unstructured.Unstructured, got %T", obj)
+	}
+
+	patched := unstrObj.DeepCopy()
+	patched.SetAnnotations(annotations)
+
+	// Marshal both to JSON
+	original, err := json.Marshal(unstrObj.Object)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal original: %w", err)
+	}
+
+	modified, err := json.Marshal(patched.Object)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal patched: %w", err)
+	}
+
+	// Return the patched object (controller-runtime will compute the diff)
+	_ = original // We return the full patched object, not a diff
+	return modified, nil
 }
 
 // parseObject parses the object from the admission request.
