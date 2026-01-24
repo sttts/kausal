@@ -216,6 +216,83 @@ Envtests use a shared environment in `TestMain` for speed. When writing envtests
 - Use FQDN finalizers (e.g., `test.kausality.io/finalizer`)
 - Set `APIVersion` and `Kind` on objects before JSON marshaling (TypeMeta isn't populated by `client.Get`)
 
+### E2E Tests
+
+E2E tests run against a real Kubernetes cluster (kind). They are located in `test/e2e/` and use the build tag `//go:build e2e`.
+
+**Running E2E tests:**
+
+```bash
+# Run the full e2e test suite (creates kind cluster, deploys kausality, runs tests)
+./test/e2e/run.sh
+
+# Run Go e2e tests directly (requires cluster with kausality already deployed)
+go test ./test/e2e/kubernetes -tags=e2e -v
+```
+
+**E2E test conventions:**
+
+1. **Use `ktesting.Eventually`** - Never use `require.Eventually`. The `ktesting.Eventually` helper provides better debugging output with descriptive reason strings:
+
+```go
+ktesting.Eventually(t, func() (bool, string) {
+    pod, err := clientset.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+    if err != nil {
+        return false, fmt.Sprintf("error getting pod: %v", err)
+    }
+    if pod.Status.Phase != corev1.PodRunning {
+        return false, fmt.Sprintf("pod phase=%s, waiting for Running", pod.Status.Phase)
+    }
+    return true, "pod is running"
+}, timeout, interval, "pod should be running")
+```
+
+2. **Reentrant tests** - Tests must be reentrant (can run multiple times). Use random namespace names:
+
+```go
+func TestMain(m *testing.M) {
+    testNamespace = fmt.Sprintf("e2e-test-%s", rand.String(6))
+    // Create namespace, run tests, cleanup
+}
+```
+
+3. **Story-telling with t.Log** - Tests should tell a story with descriptive log statements:
+
+```go
+func TestFeature(t *testing.T) {
+    t.Log("=== Testing Feature X ===")
+    t.Log("When condition Y, the system should do Z")
+
+    t.Log("")
+    t.Log("Step 1: Creating the resource...")
+    // ... create resource
+
+    t.Log("")
+    t.Log("Step 2: Waiting for controller to reconcile...")
+    // ... wait for condition
+
+    t.Log("")
+    t.Log("SUCCESS: Feature X works correctly")
+}
+```
+
+4. **Separate TestMain** - Put `TestMain` in a separate `test_main.go` file:
+
+```
+test/e2e/kubernetes/
+├── test_main.go    # TestMain, shared variables (clientset, testNamespace)
+└── e2e_test.go     # Test functions
+```
+
+5. **Use testify assertions** - Use `require` for fatal assertions, `assert` for non-fatal:
+
+```go
+_, err := clientset.AppsV1().Deployments(ns).Create(ctx, dep, metav1.CreateOptions{})
+require.NoError(t, err)
+
+assert.Equal(t, "expected", actual)
+```
+
 ## Commit Conventions
 
 Follow the commit message format:
