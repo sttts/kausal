@@ -1,0 +1,11 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kausality.fullname" . }}
+  labels:
+    {{- include "kausality.labels" . | nindent 4 }}
+rules:
+  # Need to read any resource to resolve parent objects
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
