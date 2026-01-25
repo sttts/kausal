@@ -459,5 +459,54 @@ func TestMultipleOwnerRefs_OnlyControllerMatters(t *testing.T) {
 }
 
 // =============================================================================
+// Test: Lifecycle Phase - Initialized Annotation Persistence
+// =============================================================================
+
+func TestLifecyclePhase_InitializedAnnotation(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "init-annot-deploy")
+
+	// Set the kausality.io/initialized annotation (simulating previous webhook setting it)
+	deploy.SetAnnotations(map[string]string{
+		"kausality.io/initialized": "true",
+	})
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "init-annot-rs", deploy)
+
+	// Resolve parent state - should detect IsInitialized from annotation
+	resolver := drift.NewParentResolver(k8sClient)
+	parentState, err := resolver.ResolveParent(ctx, rs)
+	if err != nil {
+		t.Fatalf("failed to resolve parent: %v", err)
+	}
+
+	if !parentState.IsInitialized {
+		t.Errorf("expected IsInitialized=true from annotation, got false")
+	}
+
+	// Detect lifecycle phase - should be Initialized due to annotation
+	lifecycleDetector := drift.NewLifecycleDetector()
+	phase := lifecycleDetector.DetectPhase(parentState)
+
+	t.Logf("Parent state: IsInitialized=%v, hasObsGen=%v, phase=%v",
+		parentState.IsInitialized, parentState.HasObservedGeneration, phase)
+
+	if phase != drift.PhaseInitialized {
+		t.Errorf("expected PhaseInitialized from annotation, got %v", phase)
+	}
+}
+
+// =============================================================================
 // Test: Approval - Mode Always
 // =============================================================================
