@@ -342,19 +342,11 @@ func (h *Handler) parseObject(req admission.Request) (client.Object, error) {
 		return nil, fmt.Errorf("no object data in request")
 	}
 
-	// Parse as unstructured
+	// Parse as unstructured - GVK is already in the raw JSON
 	obj := &unstructured.Unstructured{}
 	if err := runtime.DecodeInto(unstructured.UnstructuredJSONScheme, rawObj, obj); err != nil {
 		return nil, fmt.Errorf("failed to decode object: %w", err)
 	}
-
-	// Set GVK from request
-	gvk := schema.GroupVersionKind{
-		Group:   req.Kind.Group,
-		Version: req.Kind.Version,
-		Kind:    req.Kind.Kind,
-	}
-	obj.SetGroupVersionKind(gvk)
 
 	// Set namespace if not set
 	if obj.GetNamespace() == "" && req.Namespace != "" {
