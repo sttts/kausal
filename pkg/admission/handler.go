@@ -264,25 +264,15 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		userHash,
 	)
 
-	// Always use "add" on /metadata/annotations.
-	// "replace" on paths with ~1 escaping doesn't work reliably with K8s API server.
-	patchBytes, err := json.Marshal([]map[string]interface{}{
-		{"op": "add", "path": "/metadata/annotations", "value": annotations},
-	})
+	unstrObj.SetAnnotations(annotations)
+
+	modified, err := json.Marshal(unstrObj.Object)
 	if err != nil {
-		log.Error(err, "failed to marshal patch")
+		log.Error(err, "failed to marshal modified object")
 		return withWarnings(admission.Allowed(driftResult.Reason), warnings)
 	}
 
-	patchType := admissionv1.PatchTypeJSONPatch
-	resp := admission.Response{
-		AdmissionResponse: admissionv1.AdmissionResponse{
-			Allowed:   true,
-			PatchType: &patchType,
-			Patch:     patchBytes,
-		},
-	}
-
+	resp := admission.PatchResponseFromRaw(req.Object.Raw, modified)
 	return withWarnings(resp, warnings)
 }
 
