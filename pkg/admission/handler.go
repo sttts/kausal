@@ -122,15 +122,12 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		}
 	}
 
-	// Extract fieldManager for trace propagation (still needed for legacy compat)
-	fieldManager := extractFieldManager(req)
-
 	// Get user identifier (username if available, UID as fallback)
 	userID := controller.UserIdentifier(req.UserInfo.Username, req.UserInfo.UID)
 
 	// Add user hash for logging
 	userHash := controller.HashUsername(userID)
-	log = log.WithValues("userHash", userHash, "fieldManager", fieldManager)
+	log = log.WithValues("userHash", userHash)
 
 	// Detect drift using user hash tracking
 	driftResult, err := h.detector.DetectWithUsername(ctx, obj, userID, childUpdaters)
@@ -235,7 +232,7 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	}
 
 	// Propagate trace
-	traceResult, err := h.propagator.PropagateWithFieldManager(ctx, obj, userID, fieldManager, string(req.UID))
+	traceResult, err := h.propagator.Propagate(ctx, obj, userID, childUpdaters, string(req.UID))
 	if err != nil {
 		log.Error(err, "trace propagation failed")
 		// Don't fail the request on trace errors - just log and continue
@@ -255,7 +252,7 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		return withWarnings(admission.Allowed(driftResult.Reason), warnings)
 	}
 
-	// Set trace and updater annotations
+	// Build annotations with trace and updater
 	unstrObj := obj.(*unstructured.Unstructured)
 	annotations := unstrObj.GetAnnotations()
 	if annotations == nil {
@@ -266,15 +263,26 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		annotations[controller.UpdatersAnnotation],
 		userHash,
 	)
-	unstrObj.SetAnnotations(annotations)
 
-	modified, err := json.Marshal(unstrObj.Object)
+	// Always use "add" on /metadata/annotations.
+	// "replace" on paths with ~1 escaping doesn't work reliably with K8s API server.
+	patchBytes, err := json.Marshal([]map[string]interface{}{
+		{"op": "add", "path": "/metadata/annotations", "value": annotations},
+	})
 	if err != nil {
-		log.Error(err, "failed to marshal object")
+		log.Error(err, "failed to marshal patch")
 		return withWarnings(admission.Allowed(driftResult.Reason), warnings)
 	}
 
-	resp := admission.PatchResponseFromRaw(req.Object.Raw, modified)
+	patchType := admissionv1.PatchTypeJSONPatch
+	resp := admission.Response{
+		AdmissionResponse: admissionv1.AdmissionResponse{
+			Allowed:   true,
+			PatchType: &patchType,
+			Patch:     patchBytes,
+		},
+	}
+
 	return withWarnings(resp, warnings)
 }
 

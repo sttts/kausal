@@ -97,7 +97,7 @@ func (d *Detector) DetectWithFieldManager(ctx context.Context, obj client.Object
 	}
 
 	// Check if request comes from the controller
-	isController := d.isControllerRequest(parentState, fieldManager)
+	isController := IsControllerRequest(parentState, fieldManager)
 
 	if !isController {
 		// Different actor - not drift, but a new causal origin
@@ -175,7 +175,7 @@ func (d *Detector) DetectWithUsername(ctx context.Context, obj client.Object, us
 	}
 
 	// Check if request comes from the controller using user hash tracking
-	isController, canDetermine := d.isControllerByHash(parentState, username, childUpdaters)
+	isController, canDetermine := IsControllerByHash(parentState, username, childUpdaters)
 
 	if !canDetermine {
 		// Can't determine controller identity - be lenient
@@ -213,9 +213,9 @@ func (d *Detector) DetectWithUsername(ctx context.Context, obj client.Object, us
 	return result, nil
 }
 
-// isControllerByHash checks if the request comes from the controller using user hash tracking.
+// IsControllerByHash checks if the request comes from the controller using user hash tracking.
 // Returns (isController, canDetermine).
-func (d *Detector) isControllerByHash(parentState *ParentState, username string, childUpdaters []string) (bool, bool) {
+func IsControllerByHash(parentState *ParentState, username string, childUpdaters []string) (bool, bool) {
 	userHash := controller.HashUsername(username)
 
 	// Case 1: Single updater on child - that's the controller
@@ -262,29 +262,19 @@ func ParseUpdaterHashes(obj client.Object) []string {
 	return result
 }
 
-// isControllerRequest checks if the request comes from the controller.
-func (d *Detector) isControllerRequest(parentState *ParentState, fieldManager string) bool {
-	// If we don't know the controller manager, we can't determine who the controller is.
-	// This handles cases where parent doesn't have managedFields (older objects).
-	// In this case, we cannot reliably detect drift - treat as controller to allow changes.
+// IsControllerRequest checks if the request comes from the controller.
+// Returns true if:
+// - Controller manager is unknown (can't determine, be lenient)
+// - Field manager is empty (ambiguous, assume controller)
+// - Field manager matches the known controller manager
+func IsControllerRequest(parentState *ParentState, fieldManager string) bool {
 	if parentState.ControllerManager == "" {
 		return true
 	}
-
-	// If the request has a fieldManager that matches the controller, it's definitely the controller.
-	if fieldManager == parentState.ControllerManager {
+	if fieldManager == "" {
 		return true
 	}
-
-	// If the request has a non-empty fieldManager that doesn't match, it's a different actor.
-	// This allows us to distinguish intentional changes by users, HPA, etc.
-	if fieldManager != "" {
-		return false
-	}
-
-	// Empty fieldManager is ambiguous - controllers often don't set it.
-	// Treat as potentially controller and check for drift.
-	return true
+	return fieldManager == parentState.ControllerManager
 }
 
 // DetectFromState checks for drift given an already-resolved parent state.
@@ -330,7 +320,7 @@ func (d *Detector) DetectFromStateWithFieldManager(parentState *ParentState, fie
 	}
 
 	// Check if request comes from the controller
-	isController := d.isControllerRequest(parentState, fieldManager)
+	isController := IsControllerRequest(parentState, fieldManager)
 
 	if !isController {
 		// Different actor - not drift, but a new causal origin

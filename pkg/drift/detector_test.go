@@ -316,10 +316,6 @@ func TestLifecycleDetector_DetectPhase(t *testing.T) {
 }
 
 func TestIsControllerByHash(t *testing.T) {
-	detector := &Detector{
-		lifecycleDetector: NewLifecycleDetector(),
-	}
-
 	// Generate some user hashes
 	user1 := "system:serviceaccount:kube-system:deployment-controller"
 	user2 := "admin@example.com"
@@ -407,7 +403,7 @@ func TestIsControllerByHash(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isController, canDetermine := detector.isControllerByHash(tt.parentState, tt.username, tt.childUpdaters)
+			isController, canDetermine := IsControllerByHash(tt.parentState, tt.username, tt.childUpdaters)
 			assert.Equal(t, tt.wantController, isController, "isController")
 			assert.Equal(t, tt.wantCanDetermine, canDetermine, "canDetermine")
 		})

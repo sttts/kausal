@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	kadmission "github.com/kausality-io/kausality/pkg/admission"
+	"github.com/kausality-io/kausality/pkg/controller"
 	"github.com/kausality-io/kausality/pkg/trace"
 )
 
@@ -29,7 +30,7 @@ func TestTracePropagation_NewOrigin(t *testing.T) {
 	deploy := createDeployment(t, ctx, "trace-origin-deploy")
 
 	propagator := trace.NewPropagator(k8sClient)
-	result, err := propagator.Propagate(ctx, deploy, "test-user@example.com")
+	result, err := propagator.Propagate(ctx, deploy, "test-user@example.com", nil, "")
 	if err != nil {
 		t.Fatalf("propagation failed: %v", err)
 	}
@@ -102,9 +103,10 @@ func TestTracePropagation_ExtendParent(t *testing.T) {
 	// Create child ReplicaSet
 	rs := createReplicaSetWithOwner(t, ctx, "trace-extend-rs", deploy)
 
-	// Propagate trace to child
+	// Propagate trace to child - controller-sa is the only updater, so it's the controller
 	propagator := trace.NewPropagator(k8sClient)
-	result, err := propagator.Propagate(ctx, rs, "controller-sa")
+	childUpdaters := []string{controller.HashUsername("controller-sa")}
+	result, err := propagator.Propagate(ctx, rs, "controller-sa", childUpdaters, "")
 	if err != nil {
 		t.Fatalf("propagation failed: %v", err)
 	}
@@ -165,9 +167,11 @@ func TestDifferentActor_NewTraceOrigin(t *testing.T) {
 	// Create child ReplicaSet
 	rs := createReplicaSetWithOwner(t, ctx, "diff-actor-rs", deploy)
 
-	// Propagate trace with DIFFERENT fieldManager (simulating kubectl or another actor)
+	// Propagate trace with DIFFERENT user (simulating kubectl or another actor)
+	// childUpdaters contains the original controller's hash, not the different user
 	propagator := trace.NewPropagator(k8sClient)
-	result, err := propagator.PropagateWithFieldManager(ctx, rs, "different-user", "kubectl-edit", "test-req-uid")
+	childUpdaters := []string{controller.HashUsername("original-controller")}
+	result, err := propagator.Propagate(ctx, rs, "different-user", childUpdaters, "test-req-uid")
 	if err != nil {
 		t.Fatalf("propagation failed: %v", err)
 	}
