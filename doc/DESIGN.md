@@ -217,14 +217,18 @@ Additional parent annotations for operational control:
 ```yaml
 metadata:
   annotations:
-    kausality.io/freeze: "true"                        # Block ALL changes
-    kausality.io/snooze-until: "2026-01-25T00:00:00Z"  # Suppress escalation
+    # Freeze: block ALL changes (emergency lockdown)
+    kausality.io/freeze: '{"user":"admin@example.com","message":"investigating incident #123","at":"2026-01-25T10:00:00Z"}'
+    # Snooze: suppress drift callbacks until expiry
+    kausality.io/snooze: '{"expiry":"2026-01-25T12:00:00Z","user":"ops@example.com","message":"deploying hotfix"}'
 ```
 
 | Annotation | Effect |
 |------------|--------|
-| `freeze: "true"` | Block ALL child mutations, even expected changes (parent spec change). Emergency lockdown. |
-| `snooze-until: <timestamp>` | Block drift but don't escalate to Slack until timestamp. Suppresses notifications, not permissions. |
+| `kausality.io/freeze` | Block ALL child mutations, even expected changes. Emergency lockdown. Structured JSON with `user`, `message`, `at` fields for audit trail. |
+| `kausality.io/snooze` | Suppress drift callbacks until `expiry` timestamp. Structured JSON with `user`, `message` fields. Does not block mutations, only notifications. |
+
+Both annotations support legacy formats for backwards compatibility (`"true"` for freeze, plain RFC3339 timestamp for snooze).
 
 ### Lifecycle Phases
 
@@ -443,8 +447,8 @@ Webhook implementations apply actions via Kubernetes API:
 | Approve (once) | Add `kausality.io/approvals` with `mode: once` |
 | Approve (generation) | Add `kausality.io/approvals` with `mode: generation` |
 | Ignore (always) | Add `kausality.io/approvals` with `mode: always` |
-| Freeze | Add `kausality.io/rejections` entry |
-| Snooze | Set `kausality.io/snooze-until: <timestamp>` |
+| Freeze | Set `kausality.io/freeze` with `{"user":..., "message":..., "at":...}` |
+| Snooze | Set `kausality.io/snooze` with `{"expiry":..., "user":..., "message":...}` |
 
 ### Slack Escalation
 
@@ -484,7 +488,7 @@ When unexpected change detected and no approval/policy match:
      c. Check ApprovalPolicy rules for pattern match
         → If policy matches: ALLOW
      d. Else:
-        - If parent has snooze-until and not expired → DENY (no escalation)
+        - If parent has snooze annotation and not expired → DENY (no escalation)
         - Else → DENY and escalate to Slack
 ```
 
@@ -494,12 +498,12 @@ When unexpected change detected and no approval/policy match:
 |---------|----------|
 | Parent deleting | `allowed: true` |
 | Parent initializing | `allowed: true` |
-| Parent frozen | `allowed: false`, status 403 Forbidden, reason: frozen |
+| Parent frozen | `allowed: false`, status 403 Forbidden, message includes user/reason/timestamp from freeze annotation |
 | Expected change (gen != obsGen) | `allowed: true` |
 | Drift with valid approval | `allowed: true` |
 | Drift with ApprovalPolicy match | `allowed: true` |
 | Drift rejected (explicit rejection) | `allowed: false`, status 403 Forbidden, reason from rejection |
-| Drift snoozed (no escalation) | `allowed: false`, status 403 Forbidden, no Slack notification |
+| Drift snoozed | Callbacks suppressed until expiry, mutations still follow normal drift rules |
 | Drift without approval (blocked) | `allowed: false`, status 403 Forbidden, escalate to Slack |
 | Parent not found | `allowed: false`, status 422 Unprocessable |
 

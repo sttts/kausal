@@ -159,7 +159,7 @@ func (c *Client) Freeze(ctx context.Context, item DriftItem, reason string) erro
 }
 
 // Snooze applies a snooze duration on the parent
-func (c *Client) Snooze(ctx context.Context, item DriftItem, duration time.Duration) error {
+func (c *Client) Snooze(ctx context.Context, item DriftItem, duration time.Duration, user, message string) error {
 	return c.applier.ApplySnooze(ctx,
 		approval.ObjectRef{
 			APIVersion: item.ParentAPIVersion,
@@ -168,5 +168,7 @@ func (c *Client) Snooze(ctx context.Context, item DriftItem, duration time.Durat
 			Name:       item.ParentName,
 		},
 		duration,
+		user,
+		message,
 	)
 }

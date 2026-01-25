@@ -11,15 +11,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const (
-	// SnoozeAnnotation is the annotation key for snooze-until timestamp.
-	SnoozeAnnotation = "kausality.io/snooze-until"
-
-	// FreezeAnnotation is the annotation key for freeze lockdown.
-	// When set to "true", ALL child mutations are blocked, even expected changes.
-	FreezeAnnotation = "kausality.io/freeze"
-)
-
 // ObjectRef identifies a Kubernetes object for actions.
 type ObjectRef struct {
 	APIVersion string
@@ -141,8 +132,8 @@ func (a *ActionApplier) ApplyRejection(ctx context.Context, parent ObjectRef, ch
 	return a.updateRejections(ctx, parentObj, annotations, rejections)
 }
 
-// ApplySnooze sets the snooze-until annotation on the parent object.
-func (a *ActionApplier) ApplySnooze(ctx context.Context, parent ObjectRef, duration time.Duration) error {
+// ApplySnooze sets the snooze annotation on the parent object.
+func (a *ActionApplier) ApplySnooze(ctx context.Context, parent ObjectRef, duration time.Duration, user, message string) error {
 	// Fetch the parent object
 	parentObj, err := a.fetchObject(ctx, parent)
 	if err != nil {
@@ -155,11 +146,76 @@ func (a *ActionApplier) ApplySnooze(ctx context.Context, parent ObjectRef, durat
 		annotations = make(map[string]string)
 	}
 
-	// Set snooze-until
-	snoozeUntil := time.Now().Add(duration).UTC().Format(time.RFC3339)
-	annotations[SnoozeAnnotation] = snoozeUntil
+	// Create snooze with structured data
+	snooze := &Snooze{
+		Expiry:  time.Now().Add(duration).UTC(),
+		User:    user,
+		Message: message,
+	}
+	snoozeValue, err := MarshalSnooze(snooze)
+	if err != nil {
+		return fmt.Errorf("failed to marshal snooze: %w", err)
+	}
+	annotations[SnoozeAnnotation] = snoozeValue
 
 	parentObj.SetAnnotations(annotations)
+	if err := a.client.Update(ctx, parentObj); err != nil {
+		return fmt.Errorf("failed to update parent: %w", err)
+	}
+
+	return nil
+}
+
+// ApplyFreeze sets the freeze annotation on the parent object.
+func (a *ActionApplier) ApplyFreeze(ctx context.Context, parent ObjectRef, user, message string) error {
+	// Fetch the parent object
+	parentObj, err := a.fetchObject(ctx, parent)
+	if err != nil {
+		return fmt.Errorf("failed to fetch parent: %w", err)
+	}
+
+	// Get current annotations
+	annotations := parentObj.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+
+	// Create freeze with structured data
+	freeze := &Freeze{
+		User:    user,
+		Message: message,
+		At:      time.Now().UTC(),
+	}
+	freezeValue, err := MarshalFreeze(freeze)
+	if err != nil {
+		return fmt.Errorf("failed to marshal freeze: %w", err)
+	}
+	annotations[FreezeAnnotation] = freezeValue
+
+	parentObj.SetAnnotations(annotations)
+	if err := a.client.Update(ctx, parentObj); err != nil {
+		return fmt.Errorf("failed to update parent: %w", err)
+	}
+
+	return nil
+}
+
+// ClearFreeze removes the freeze annotation from the parent.
+func (a *ActionApplier) ClearFreeze(ctx context.Context, parent ObjectRef) error {
+	// Fetch the parent object
+	parentObj, err := a.fetchObject(ctx, parent)
+	if err != nil {
+		return fmt.Errorf("failed to fetch parent: %w", err)
+	}
+
+	annotations := parentObj.GetAnnotations()
+	if annotations == nil || annotations[FreezeAnnotation] == "" {
+		return nil // No freeze to clear
+	}
+
+	delete(annotations, FreezeAnnotation)
+	parentObj.SetAnnotations(annotations)
+
 	if err := a.client.Update(ctx, parentObj); err != nil {
 		return fmt.Errorf("failed to update parent: %w", err)
 	}

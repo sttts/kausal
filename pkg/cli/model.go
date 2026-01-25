@@ -283,7 +283,7 @@ func (m Model) freeze(item DriftItem) tea.Cmd {
 
 func (m Model) snooze(item DriftItem) tea.Cmd {
 	return func() tea.Msg {
-		err := m.client.Snooze(context.Background(), item, 1*time.Hour)
+		err := m.client.Snooze(context.Background(), item, 1*time.Hour, "", "")
 		return actionDoneMsg{action: "snooze 1h", err: err}
 	}
 }

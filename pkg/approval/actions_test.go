@@ -154,7 +154,7 @@ func TestActionApplier_ApplySnooze(t *testing.T) {
 	}
 
 	before := time.Now()
-	err := applier.ApplySnooze(context.Background(), parentRef, 1*time.Hour)
+	err := applier.ApplySnooze(context.Background(), parentRef, 1*time.Hour, "admin@example.com", "deploying hotfix")
 	require.NoError(t, err)
 	after := time.Now()
 
@@ -169,12 +169,18 @@ func TestActionApplier_ApplySnooze(t *testing.T) {
 	snoozeStr := annotations[SnoozeAnnotation]
 	require.NotEmpty(t, snoozeStr)
 
-	snoozeTime, err := time.Parse(time.RFC3339, snoozeStr)
+	// Parse the structured snooze
+	snooze, err := ParseSnooze(snoozeStr)
 	require.NoError(t, err)
+	require.NotNil(t, snooze)
 
-	// Snooze should be approximately 1 hour from now
-	assert.True(t, snoozeTime.After(before.Add(59*time.Minute)))
-	assert.True(t, snoozeTime.Before(after.Add(61*time.Minute)))
+	// Verify fields
+	assert.Equal(t, "admin@example.com", snooze.User)
+	assert.Equal(t, "deploying hotfix", snooze.Message)
+
+	// Snooze expiry should be approximately 1 hour from now
+	assert.True(t, snooze.Expiry.After(before.Add(59*time.Minute)))
+	assert.True(t, snooze.Expiry.Before(after.Add(61*time.Minute)))
 }
 
 func TestActionApplier_RemoveApproval(t *testing.T) {

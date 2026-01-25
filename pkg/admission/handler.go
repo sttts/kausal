@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/go-logr/logr"
 
@@ -150,9 +149,9 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 
 	// Check for freeze annotation on parent - blocks ALL mutations, not just drift
 	if driftResult.ParentRef != nil {
-		if frozen, reason := h.checkFreeze(ctx, driftResult.ParentRef, obj.GetNamespace(), log); frozen {
-			freezeMsg := fmt.Sprintf("mutation blocked: parent is frozen (%s)", reason)
-			log.Info("MUTATION FROZEN", logFields...)
+		if frozen, freeze := h.checkFreeze(ctx, driftResult.ParentRef, obj.GetNamespace(), log); frozen {
+			freezeMsg := fmt.Sprintf("mutation blocked: parent %s", freeze.String())
+			log.Info("MUTATION FROZEN", append(logFields, "freezeUser", freeze.User, "freezeMessage", freeze.Message)...)
 			return admission.Denied(freezeMsg)
 		}
 	}
@@ -568,29 +567,38 @@ func (h *Handler) fetchParent(ctx context.Context, ref *drift.ParentRef, childNa
 
 // checkFreeze checks if the parent has a freeze annotation.
 // Freeze blocks ALL mutations, not just drift - it's an emergency lockdown.
-func (h *Handler) checkFreeze(ctx context.Context, ref *drift.ParentRef, childNamespace string, log logr.Logger) (frozen bool, reason string) {
+// Returns the parsed Freeze struct with user/message/timestamp info.
+func (h *Handler) checkFreeze(ctx context.Context, ref *drift.ParentRef, childNamespace string, log logr.Logger) (frozen bool, freeze *approval.Freeze) {
 	parent, err := h.fetchParent(ctx, ref, childNamespace)
 	if err != nil {
 		log.V(1).Info("failed to fetch parent for freeze check", "error", err)
-		return false, ""
+		return false, nil
 	}
 
 	annotations := parent.GetAnnotations()
 	if annotations == nil {
-		return false, ""
+		return false, nil
 	}
 
 	freezeValue, ok := annotations[approval.FreezeAnnotation]
 	if !ok || freezeValue == "" {
-		return false, ""
+		return false, nil
 	}
 
-	// Any non-empty value other than "false" is considered frozen
+	// Support "false" to explicitly disable
 	if freezeValue == "false" {
-		return false, ""
+		return false, nil
 	}
 
-	return true, freezeValue
+	// Parse the structured freeze annotation
+	freeze, err = approval.ParseFreeze(freezeValue)
+	if err != nil {
+		log.V(1).Info("invalid freeze annotation", "value", freezeValue, "error", err)
+		// Treat invalid JSON as frozen (fail closed) with no metadata
+		return true, &approval.Freeze{}
+	}
+
+	return true, freeze
 }
 
 // extractFieldManager extracts the fieldManager from admission request options.
@@ -623,9 +631,11 @@ func (h *Handler) sendDriftCallback(ctx context.Context, req admission.Request, 
 	}
 
 	// Check for snooze annotation on parent
-	if parent != nil && h.isParentSnoozed(parent, log) {
-		log.V(1).Info("drift callback suppressed (parent is snoozed)", "phase", phase)
-		return
+	if parent != nil {
+		if snooze := h.isParentSnoozed(parent, log); snooze != nil {
+			log.V(1).Info("drift callback suppressed", "phase", phase, "snooze", snooze.String())
+			return
+		}
 	}
 
 	report := h.buildDriftReport(req, obj, driftResult, phase)
@@ -639,35 +649,36 @@ func (h *Handler) sendDriftCallback(ctx context.Context, req admission.Request, 
 }
 
 // isParentSnoozed checks if the parent has an active snooze annotation.
-func (h *Handler) isParentSnoozed(parent client.Object, log logr.Logger) bool {
+// Returns the parsed Snooze struct if active, nil otherwise.
+func (h *Handler) isParentSnoozed(parent client.Object, log logr.Logger) *approval.Snooze {
 	if parent == nil {
-		return false
+		return nil
 	}
 
 	annotations := parent.GetAnnotations()
 	if annotations == nil {
-		return false
+		return nil
 	}
 
-	snoozeUntil, ok := annotations[approval.SnoozeAnnotation]
-	if !ok || snoozeUntil == "" {
-		return false
+	snoozeValue, ok := annotations[approval.SnoozeAnnotation]
+	if !ok || snoozeValue == "" {
+		return nil
 	}
 
-	// Parse the snooze timestamp
-	snoozeTime, err := time.Parse(time.RFC3339, snoozeUntil)
+	// Parse the structured snooze annotation
+	snooze, err := approval.ParseSnooze(snoozeValue)
 	if err != nil {
-		log.V(1).Info("invalid snooze-until timestamp", "value", snoozeUntil, "error", err)
-		return false
+		log.V(1).Info("invalid snooze annotation", "value", snoozeValue, "error", err)
+		return nil
 	}
 
 	// Check if snooze is still active
-	if time.Now().Before(snoozeTime) {
-		log.V(1).Info("parent is snoozed", "until", snoozeUntil)
-		return true
+	if snooze.IsActive() {
+		log.V(1).Info("parent is snoozed", "snooze", snooze.String())
+		return snooze
 	}
 
-	return false
+	return nil
 }
 
 // buildDriftReport constructs a DriftReport from the admission context.

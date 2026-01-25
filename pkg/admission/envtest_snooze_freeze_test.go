@@ -538,3 +538,279 @@ func TestFreeze_FalseDoesNotBlock(t *testing.T) {
 
 	t.Log("SUCCESS: freeze=false does not block when approval exists")
 }
+
+// TestFreeze_StructuredAnnotation_MessageInDenial verifies that the structured
+// freeze annotation (with user, message, at) is parsed correctly and the
+// denial message includes all the context.
+func TestFreeze_StructuredAnnotation_MessageInDenial(t *testing.T) {
+	ctx := context.Background()
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "structured-freeze-deploy")
+
+	// Create child ReplicaSet FIRST
+	rs := createReplicaSetWithOwner(t, ctx, "structured-freeze-rs", deploy)
+
+	// Add structured freeze annotation
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Create structured freeze JSON
+	freezeTime := time.Now().Add(-10 * time.Minute).UTC()
+	freezeJSON := fmt.Sprintf(`{"user":"admin@example.com","message":"investigating incident #123","at":%q}`, freezeTime.Format(time.RFC3339))
+
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[approval.FreezeAnnotation] = freezeJSON
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment: %v", err)
+	}
+
+	// Set parent as ready
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Find the controller manager
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler (enforce mode)
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    ctrl.Log.WithName("test-structured-freeze"),
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeEnforce,
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get rs: %v", err)
+	}
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("structured-freeze-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	// Handle the request
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, result=%v", resp.Allowed, resp.Result)
+
+	// Should be denied
+	if resp.Allowed {
+		t.Errorf("expected allowed=false when parent is frozen")
+	}
+
+	// Verify error message contains structured freeze info
+	if resp.Result == nil {
+		t.Fatal("expected Result to be set")
+	}
+
+	msg := resp.Result.Message
+	t.Logf("Denial message: %s", msg)
+
+	// Check that the message contains key information (but NOT the user for privacy)
+	if !containsSubstring(msg, "frozen") {
+		t.Errorf("expected message to contain 'frozen', got: %s", msg)
+	}
+	if !containsSubstring(msg, "investigating incident #123") {
+		t.Errorf("expected message to contain reason 'investigating incident #123', got: %s", msg)
+	}
+	// User should NOT be in the public error message (privacy)
+	if containsSubstring(msg, "admin@example.com") {
+		t.Errorf("user should NOT be exposed in denial message, got: %s", msg)
+	}
+
+	t.Log("SUCCESS: Structured freeze annotation provides detailed denial message without exposing user")
+}
+
+// TestSnooze_StructuredAnnotation verifies that the structured snooze annotation
+// (with expiry, user, message) is parsed correctly and behaves like the legacy format.
+func TestSnooze_StructuredAnnotation(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a mock webhook server to receive drift reports
+	var callCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		response := v1alpha1.DriftReportResponse{Acknowledged: true}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	// Create callback sender
+	callbackSender, err := callback.NewSender(callback.SenderConfig{
+		URL:        server.URL,
+		Timeout:    5 * time.Second,
+		RetryCount: 0,
+		Log:        ctrl.Log.WithName("test-structured-snooze"),
+	})
+	if err != nil {
+		t.Fatalf("failed to create callback sender: %v", err)
+	}
+
+	// Create parent deployment with structured snooze annotation
+	deploy := createDeployment(t, ctx, "structured-snooze-deploy")
+
+	// Add structured snooze annotation (snooze until 1 hour from now)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+
+	snoozeExpiry := time.Now().Add(1 * time.Hour).UTC()
+	snoozeJSON := fmt.Sprintf(`{"expiry":%q,"user":"ops@example.com","message":"deploying hotfix v1.2.3"}`, snoozeExpiry.Format(time.RFC3339))
+	annotations[approval.SnoozeAnnotation] = snoozeJSON
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment: %v", err)
+	}
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "structured-snooze-rs", deploy)
+
+	// Set parent as ready (drift scenario: gen == obsGen)
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Re-fetch to get managedFields
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	// Find the controller manager from managedFields
+	var controllerManager string
+	for _, mf := range deploy.ManagedFields {
+		if mf.Subresource == "status" {
+			controllerManager = mf.Manager
+			break
+		}
+	}
+
+	// Create handler with callback sender
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client:         k8sClient,
+		Log:            ctrl.Log.WithName("test-structured-snooze"),
+		CallbackSender: callbackSender,
+		DriftConfig: &config.Config{
+			DriftDetection: config.DriftDetectionConfig{
+				DefaultMode: config.ModeLog, // Non-enforce to allow but still detect
+			},
+		},
+	})
+
+	// Re-fetch RS and set TypeMeta
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("failed to get rs: %v", err)
+	}
+	rs.APIVersion = "apps/v1"
+	rs.Kind = "ReplicaSet"
+
+	oldRS := rs.DeepCopy()
+	newRS := rs.DeepCopy()
+	newReplicas := int32(3)
+	newRS.Spec.Replicas = &newReplicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       types.UID("structured-snooze-uid"),
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			Object:    runtime.RawExtension{Raw: newBytes},
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: "controller"},
+			Options:   runtime.RawExtension{Raw: []byte(optionsJSON)},
+		},
+	}
+
+	// Handle the request
+	resp := handler.Handle(ctx, req)
+
+	t.Logf("Response: allowed=%v, warnings=%v", resp.Allowed, resp.Warnings)
+
+	// Should be allowed (non-enforce mode) and have drift warning
+	if !resp.Allowed {
+		t.Errorf("expected allowed=true in non-enforce mode")
+	}
+
+	// Check for drift warning (proving drift was detected)
+	hasDriftWarning := false
+	for _, w := range resp.Warnings {
+		if containsSubstring(w, "drift") {
+			hasDriftWarning = true
+			break
+		}
+	}
+	if !hasDriftWarning {
+		t.Errorf("expected drift warning in response")
+	}
+
+	// Wait for async callback (if any) to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify NO callback was sent (snooze suppresses it)
+	if callCount.Load() != 0 {
+		t.Errorf("expected no drift callback when snoozed with structured annotation, but got %d calls", callCount.Load())
+	}
+
+	t.Log("SUCCESS: Structured snooze annotation suppressed callback while drift was still detected")
+}
