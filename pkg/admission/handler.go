@@ -12,7 +12,6 @@ import (
 	jsonpatch "gomodules.xyz/jsonpatch/v2"
 
 	admissionv1 "k8s.io/api/admission/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -577,24 +576,6 @@ func equalSpec(a, b interface{}) bool {
 	}
 
 	return string(aJSON) == string(bJSON)
-}
-
-// ValidatingWebhookFor creates a ValidatingAdmissionResponse for the given result.
-func ValidatingWebhookFor(result *drift.DriftResult) admission.Response {
-	if result.Allowed {
-		return admission.Allowed(result.Reason)
-	}
-
-	return admission.Response{
-		AdmissionResponse: admissionv1.AdmissionResponse{
-			Allowed: false,
-			Result: &metav1.Status{
-				Code:    http.StatusForbidden,
-				Message: result.Reason,
-				Reason:  metav1.StatusReasonForbidden,
-			},
-		},
-	}
 }
 
 // approvalCheckResult extends approval.CheckResult with parent info for pruning.

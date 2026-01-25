@@ -81,14 +81,6 @@ func (t Trace) Origin() *Hop {
 	return &t[0]
 }
 
-// LastHop returns the most recent hop, or nil if empty.
-func (t Trace) LastHop() *Hop {
-	if len(t) == 0 {
-		return nil
-	}
-	return &t[len(t)-1]
-}
-
 // Append creates a new trace with the given hop appended.
 func (t Trace) Append(hop Hop) Trace {
 	result := make(Trace, len(t)+1)

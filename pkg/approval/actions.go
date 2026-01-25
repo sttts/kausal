@@ -383,15 +383,3 @@ func (a *ActionApplier) updateRejections(ctx context.Context, obj *unstructured.
 
 	return nil
 }
-
-// MarshalRejections marshals rejections to JSON for annotation.
-func MarshalRejections(rejections []Rejection) (string, error) {
-	if len(rejections) == 0 {
-		return "", nil
-	}
-	data, err := json.Marshal(rejections)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}

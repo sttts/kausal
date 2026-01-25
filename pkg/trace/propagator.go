@@ -166,13 +166,3 @@ func GetTraceFromObject(obj client.Object) (Trace, error) {
 
 	return Parse(traceStr)
 }
-
-// SetTraceOnObject sets the trace annotation on an object.
-func SetTraceOnObject(obj *unstructured.Unstructured, trace Trace) {
-	annotations := obj.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-	annotations[TraceAnnotation] = trace.String()
-	obj.SetAnnotations(annotations)
-}
