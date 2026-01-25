@@ -64,7 +64,7 @@ func TestDetectFromState(t *testing.T) {
 			},
 			expectAllowed: true,
 			expectDrift:   false,
-			expectPhase:   PhaseReady,
+			expectPhase:   PhaseInitialized,
 		},
 		{
 			name: "expected change - gen != obsGen",
@@ -76,7 +76,7 @@ func TestDetectFromState(t *testing.T) {
 			},
 			expectAllowed:     true,
 			expectDrift:       false,
-			expectPhase:       PhaseReady,
+			expectPhase:       PhaseInitialized,
 			expectReasonMatch: "expected change",
 		},
 		{
@@ -89,7 +89,7 @@ func TestDetectFromState(t *testing.T) {
 			},
 			expectAllowed:     true, // Phase 1: always allow
 			expectDrift:       true,
-			expectPhase:       PhaseReady,
+			expectPhase:       PhaseInitialized,
 			expectReasonMatch: "drift detected",
 		},
 		{
@@ -103,7 +103,7 @@ func TestDetectFromState(t *testing.T) {
 			},
 			expectAllowed: true,
 			expectDrift:   true,
-			expectPhase:   PhaseReady,
+			expectPhase:   PhaseInitialized,
 		},
 	}
 
@@ -236,7 +236,7 @@ func TestLifecycleDetector_DetectPhase(t *testing.T) {
 		{
 			name:   "nil state - ready",
 			state:  nil,
-			expect: PhaseReady,
+			expect: PhaseInitialized,
 		},
 		{
 			name: "deletionTimestamp set - deleting",
@@ -259,7 +259,7 @@ func TestLifecycleDetector_DetectPhase(t *testing.T) {
 			state: &ParentState{
 				IsInitialized: true,
 			},
-			expect: PhaseReady,
+			expect: PhaseInitialized,
 		},
 		{
 			name: "Initialized condition true - ready",
@@ -268,7 +268,7 @@ func TestLifecycleDetector_DetectPhase(t *testing.T) {
 					{Type: "Initialized", Status: metav1.ConditionTrue},
 				},
 			},
-			expect: PhaseReady,
+			expect: PhaseInitialized,
 		},
 		{
 			name: "Ready condition true - ready",
@@ -277,7 +277,7 @@ func TestLifecycleDetector_DetectPhase(t *testing.T) {
 					{Type: "Ready", Status: metav1.ConditionTrue},
 				},
 			},
-			expect: PhaseReady,
+			expect: PhaseInitialized,
 		},
 		{
 			name: "observedGeneration exists - ready",
@@ -285,7 +285,7 @@ func TestLifecycleDetector_DetectPhase(t *testing.T) {
 				HasObservedGeneration: true,
 				ObservedGeneration:    1,
 			},
-			expect: PhaseReady,
+			expect: PhaseInitialized,
 		},
 		{
 			name: "no initialization signals - initializing",

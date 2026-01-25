@@ -70,7 +70,7 @@ Kausality handles different lifecycle phases:
 | Phase | Behavior |
 |-------|----------|
 | **Initializing** | Allow all changes (resource is being set up) |
-| **Ready** | Drift detection applies |
+| **Initialized** | Drift detection applies |
 | **Deleting** | Allow all changes (cleanup phase) |
 
 Initialization is detected by checking (in order):

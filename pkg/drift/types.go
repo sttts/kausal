@@ -68,8 +68,8 @@ type LifecyclePhase string
 const (
 	// PhaseInitializing indicates the parent is still initializing.
 	PhaseInitializing LifecyclePhase = "Initializing"
-	// PhaseReady indicates the parent is in steady state.
-	PhaseReady LifecyclePhase = "Ready"
+	// PhaseInitialized indicates the parent is in steady state.
+	PhaseInitialized LifecyclePhase = "Initialized"
 	// PhaseDeleting indicates the parent is being deleted.
 	PhaseDeleting LifecyclePhase = "Deleting"
 )

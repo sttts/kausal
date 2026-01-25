@@ -88,7 +88,7 @@ func (d *Detector) DetectWithFieldManager(ctx context.Context, obj client.Object
 		result.Reason = "parent is initializing"
 		return result, nil
 
-	case PhaseReady:
+	case PhaseInitialized:
 		// Fall through to drift detection
 	}
 
@@ -187,7 +187,7 @@ func (d *Detector) DetectFromStateWithFieldManager(parentState *ParentState, fie
 		result.Reason = "parent is initializing"
 		return result
 
-	case PhaseReady:
+	case PhaseInitialized:
 		// Fall through to drift detection
 	}
 

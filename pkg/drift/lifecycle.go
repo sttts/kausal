@@ -21,7 +21,7 @@ func NewLifecycleDetector() *LifecycleDetector {
 // DetectPhase determines the lifecycle phase of a parent object.
 func (d *LifecycleDetector) DetectPhase(state *ParentState) LifecyclePhase {
 	if state == nil {
-		return PhaseReady
+		return PhaseInitialized
 	}
 
 	// Check deletion first - takes precedence
@@ -31,7 +31,7 @@ func (d *LifecycleDetector) DetectPhase(state *ParentState) LifecyclePhase {
 
 	// Check if already marked as initialized via annotation
 	if state.IsInitialized {
-		return PhaseReady
+		return PhaseInitialized
 	}
 
 	// Check initialization using configured detection order
@@ -42,7 +42,7 @@ func (d *LifecycleDetector) DetectPhase(state *ParentState) LifecyclePhase {
 
 	for _, detector := range detectionOrder {
 		if d.checkInitialized(state, detector) {
-			return PhaseReady
+			return PhaseInitialized
 		}
 	}
 

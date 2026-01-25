@@ -30,7 +30,7 @@ func TestDriftReport_JSONRoundTrip(t *testing.T) {
 				Generation:         5,
 				ObservedGeneration: 5,
 				ControllerManager:  "eks-controller",
-				LifecyclePhase:     "Ready",
+				LifecyclePhase:     "Initialized",
 			},
 			Child: ObjectReference{
 				APIVersion: "v1",

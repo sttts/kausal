@@ -102,7 +102,7 @@ type ObjectReference struct {
 	// +optional
 	ControllerManager string `json:"controllerManager,omitempty"`
 
-	// lifecyclePhase is the lifecycle phase (Initializing, Ready, Deleting).
+	// lifecyclePhase is the lifecycle phase (Initializing, Initialized, Deleting).
 	// Only set for parent objects.
 	// +optional
 	LifecyclePhase string `json:"lifecyclePhase,omitempty"`

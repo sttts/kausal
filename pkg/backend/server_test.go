@@ -36,7 +36,7 @@ func TestServer_Webhook_ReceivesDriftReport(t *testing.T) {
 				Name:               "api-server",
 				ObservedGeneration: 5,
 				ControllerManager:  "deployment-controller",
-				LifecyclePhase:     "Ready",
+				LifecyclePhase:     "Initialized",
 			},
 			Child: v1alpha1.ObjectReference{
 				APIVersion: "v1",
@@ -377,7 +377,7 @@ func TestServer_FullWorkflow(t *testing.T) {
 				Generation:         10,
 				ObservedGeneration: 10,
 				ControllerManager:  "web-controller",
-				LifecyclePhase:     "Ready",
+				LifecyclePhase:     "Initialized",
 			},
 			Child: v1alpha1.ObjectReference{
 				APIVersion: "v1",

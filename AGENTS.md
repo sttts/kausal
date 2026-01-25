@@ -39,7 +39,7 @@ The system identifies the controller by checking who owns `status.observedGenera
 - **`pkg/drift/`** - Core drift detection logic
   - `detector.go` - Main `Detector` with `DetectWithFieldManager()`
   - `resolver.go` - Resolves parent via controller ownerRef, extracts `ParentState` including `ControllerManager` from managedFields
-  - `lifecycle.go` - Detects phases: Initializing, Ready, Deleting
+  - `lifecycle.go` - Detects phases: Initializing, Initialized, Deleting
   - `types.go` - `DriftResult`, `ParentState`, `ParentRef`
 
 - **`pkg/trace/`** - Causal trace propagation

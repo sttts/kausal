@@ -400,7 +400,7 @@ spec:
     generation: 5
     observedGeneration: 5
     controllerManager: "eks-controller"
-    lifecyclePhase: "Ready"
+    lifecyclePhase: "Initialized"
   child:
     apiVersion: v1
     kind: ConfigMap
