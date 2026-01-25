@@ -354,6 +354,13 @@ A task involving code or test changes is NOT done until:
 
 Never commit test changes without running them first.
 
+### Test Timing Rules
+
+1. **Never use `time.Sleep` in tests** - Use polling/waiting functions instead. The only exception is to prove something does NOT happen (wait then verify state unchanged).
+2. **30 seconds is a good upper bound** for waiting in integration or E2E tests.
+3. **100ms is a good poll interval** for eventually-style assertions.
+4. **Always use `retry.RetryOnConflict`** around resource update operations - Kubernetes updates can fail with conflicts due to concurrent modifications.
+
 ### E2E Development Workflow
 
 **Never create kind clusters for E2E tests.** Use your existing local cluster. CI handles cluster creation.

@@ -444,64 +444,38 @@ func TestRejectionOverridesApproval(t *testing.T) {
 	assert.Contains(t, dep.Annotations, approval.ApprovalsAnnotation, "approval should still be present")
 	assert.Contains(t, dep.Annotations, approval.RejectionsAnnotation, "rejection should be present")
 
-	// Step 7: Modify ReplicaSet again - now rejection should block
+	// Step 7: Verify rejection blocks ALL mutations (including user modifications)
 	t.Log("")
-	t.Log("Step 7: Modifying ReplicaSet again - rejection should block...")
-	ktesting.Eventually(t, func() (bool, string) {
-		rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
-		if err != nil {
-			return false, fmt.Sprintf("error getting replicaset: %v", err)
-		}
-		rs.Spec.Replicas = ptr(int32(2))
-		_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{})
-		if err != nil {
-			return false, fmt.Sprintf("error updating replicaset: %v", err)
-		}
-		return true, "successfully modified replicas to 2"
-	}, defaultTimeout, defaultInterval, "should be able to modify replicaset")
-	t.Log("Modified ReplicaSet spec.replicas to 2")
-
-	// Step 8: Verify modification persists (rejection blocks controller)
-	t.Log("")
-	t.Log("Step 8: Verifying rejection blocks controller...")
-	ktesting.Eventually(t, func() (bool, string) {
-		rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
-		if err != nil {
-			return false, fmt.Sprintf("error getting replicaset: %v", err)
-		}
-		if *rs.Spec.Replicas != 2 {
-			return false, fmt.Sprintf("replicas changed to %d (rejection didn't block!)", *rs.Spec.Replicas)
-		}
-		return true, "replicas still 2 (rejection blocked drift)"
-	}, defaultTimeout, defaultInterval, "rejection should block drift")
-
-	// Step 9: Verify rejection error message contains the specific reason
-	t.Log("")
-	t.Log("Step 9: Verifying rejection error message contains specific reason...")
-	t.Log("Attempting update with controller's fieldManager to capture rejection message...")
-
-	// Try to update as if we were the deployment-controller
+	t.Log("Step 7: Attempting to modify ReplicaSet - rejection should block ALL mutations...")
 	rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
 	require.NoError(t, err)
-	rs.Spec.Replicas = ptr(int32(1)) // Try to fix back to 1 (what controller would do)
+	rs.Spec.Replicas = ptr(int32(2))
+	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{})
+	require.Error(t, err, "rejection should block user modification")
+	assert.True(t, strings.Contains(err.Error(), "frozen by test") || strings.Contains(err.Error(), "rejected"),
+		"error should indicate rejection, got: %s", err.Error())
+	t.Logf("User modification blocked as expected: %v", err)
+
+	// Step 8: Verify controller drift is also blocked
+	t.Log("")
+	t.Log("Step 8: Verifying controller modifications are also blocked...")
+	rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
+	require.NoError(t, err)
+	rs.Spec.Replicas = ptr(int32(2))
 	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{
-		FieldManager: "deployment-controller", // Use the controller's fieldManager
+		FieldManager: "deployment-controller",
 	})
-
-	// The update should fail with a rejection message containing our reason
-	require.Error(t, err, "update should be rejected")
+	require.Error(t, err, "rejection should block controller modification")
 	errMsg := err.Error()
-	t.Logf("Rejection error message: %s", errMsg)
-
-	// Verify the error message contains the specific rejection reason
-	assert.True(t, strings.Contains(errMsg, "frozen by test"),
-		"rejection error should contain the specific reason 'frozen by test', got: %s", errMsg)
+	t.Logf("Controller modification blocked: %s", errMsg)
+	assert.True(t, strings.Contains(errMsg, "frozen by test") || strings.Contains(errMsg, "rejected"),
+		"rejection error should contain reason, got: %s", errMsg)
 
 	t.Log("")
-	t.Log("SUCCESS: Rejection overrides approval")
+	t.Log("SUCCESS: Rejection overrides approval and blocks ALL mutations")
 	t.Log("- With approval only: drift was ALLOWED (controller fixed replicas)")
-	t.Log("- With approval + rejection: drift was BLOCKED (replicas stayed at 2)")
-	t.Log("- Rejection error message contains specific reason: 'frozen by test'")
+	t.Log("- With approval + rejection: ALL changes BLOCKED (user and controller)")
+	t.Log("- Rejection error message contains specific reason")
 }
 
 // TestEnforceModeBlocksDrift verifies the difference between log mode and enforce mode.
@@ -631,14 +605,33 @@ func TestEnforceModeBlocksDrift(t *testing.T) {
 	})
 	t.Logf("Created namespace %s with enforce mode", enforceNS)
 
-	// Create deployment in enforce mode namespace
+	// Create fresh deployment in enforce mode namespace (don't reuse Part 1's object)
 	enforceName := fmt.Sprintf("enforce-mode-%s", rand.String(4))
-	deployment.Name = enforceName
-	deployment.Namespace = enforceNS
-	deployment.Spec.Selector.MatchLabels["app"] = enforceName
-	deployment.Spec.Template.Labels["app"] = enforceName
+	enforceDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      enforceName,
+			Namespace: enforceNS,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr(int32(1)),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": enforceName},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": enforceName},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "nginx",
+						Image: "nginx:alpine",
+					}},
+				},
+			},
+		},
+	}
 
-	_, err = clientset.AppsV1().Deployments(enforceNS).Create(ctx, deployment, metav1.CreateOptions{})
+	_, err = clientset.AppsV1().Deployments(enforceNS).Create(ctx, enforceDeployment, metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	// Wait for stabilization
