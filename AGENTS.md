@@ -26,19 +26,49 @@ Kausality is an admission-based drift detection system for Kubernetes. It detect
 
 **Drift** = controller making changes when parent hasn't changed (`generation == observedGeneration`)
 
-The system identifies the controller by checking who owns `status.observedGeneration` in the parent's `managedFields`, then compares with the request's `fieldManager`.
-
 | Actor | Parent State | Result |
 |-------|--------------|--------|
 | Controller | gen != obsGen | Expected (reconciling) |
 | Controller | gen == obsGen | **Drift** |
 | Different actor | any | New causal origin (not drift) |
 
+### Controller Identification via User Hash Tracking
+
+The system identifies controllers by tracking which users (by `UserInfo.Username`) update parent status vs child spec:
+
+**Annotations:**
+- Parent: `kausality.io/controllers` - 5-char base36 hashes of users who update status (max 5)
+- Child: `kausality.io/updaters` - 5-char base36 hashes of users who update spec (max 5)
+
+**Recording:**
+- Child CREATE/UPDATE (spec): hash added to child's `updaters` annotation (sync, via patch)
+- Parent status UPDATE: hash added to parent's `controllers` annotation (async, 5s delay, retry on conflict)
+
+**Detection logic:**
+```
+if no controller ownerRef → skip (can't be drift)
+
+if child has 1 updater:
+    controller = that single updater
+else if parent has controllers annotation:
+    controller = intersection(child.updaters, parent.controllers)
+else:
+    → can't determine, be lenient (skip drift detection)
+
+if current_user_hash in controller set → controller request → check drift
+else → not controller → not drift (new causal origin)
+```
+
+**Webhook configuration:** Must intercept status subresource updates to record controllers.
+
 ### Package Structure
 
+- **`pkg/controller/`** - Controller identification via user hash tracking
+  - `tracker.go` - `HashUsername()`, `RecordUpdater()`, `RecordControllerAsync()`, `IdentifyController()`
+
 - **`pkg/drift/`** - Core drift detection logic
-  - `detector.go` - Main `Detector` with `DetectWithFieldManager()`
-  - `resolver.go` - Resolves parent via controller ownerRef, extracts `ParentState` including `ControllerManager` from managedFields
+  - `detector.go` - Main `Detector` with `DetectWithUsername()` (hash-based) and legacy `DetectWithFieldManager()`
+  - `resolver.go` - Resolves parent via controller ownerRef, extracts `ParentState` including `Controllers` hashes
   - `lifecycle.go` - Detects phases: Initializing, Initialized, Deleting
   - `types.go` - `DriftResult`, `ParentState`, `ParentRef`
 
@@ -74,9 +104,9 @@ The system identifies the controller by checking who owns `status.observedGenera
 
 ### Key Design Decisions
 
-1. **Controller identification via managedFields**: The manager who owns `f:status.f:observedGeneration` is the controller. Compare `request.options.fieldManager` with this.
+1. **Controller identification via user hash tracking**: Controllers are identified by correlating users who update parent status with users who update child spec. Uses 5-char base36 hashes of `UserInfo.Username`. Single child updater = controller; multiple updaters = intersection with parent's status updaters.
 
-2. **Spec changes only**: Only intercepts mutations to `spec`. Status and metadata changes are ignored.
+2. **Spec and status interception**: Intercepts spec mutations for drift detection and status subresource updates to record controller identity.
 
 3. **Lifecycle phases**: Initializing and Deleting phases allow all changes. Detection uses `observedGeneration` existence, `Initialized`/`Ready` conditions.
 

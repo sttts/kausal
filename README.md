@@ -46,7 +46,7 @@ See [Configuration](#drift-detection-mode) for per-resource mode settings.
 
 When a mutation is intercepted, Kausality:
 
-1. **Identifies the actor** via `request.options.fieldManager` and compares with the parent's controller (the manager that owns `status.observedGeneration` in the parent's managedFields)
+1. **Identifies the actor** via user hash tracking — correlating users who update parent status with users who update child spec
 
 2. **Checks the parent's state** (`generation` vs `observedGeneration`)
 
@@ -287,6 +287,7 @@ kausality/
 │   │   ├── sender.go            # HTTP client for webhook calls
 │   │   └── tracker.go           # ID tracking for deduplication
 │   ├── config/                  # Configuration types and loading
+│   ├── controller/              # Controller identification via user hash tracking
 │   ├── drift/                   # Core drift detection logic
 │   │   ├── types.go             # DriftResult, ParentState types
 │   │   ├── detector.go          # Main drift detection
@@ -308,7 +309,7 @@ kausality/
 
 - [x] **Phase 1**: Logging only
   - Detect drift via generation/observedGeneration comparison
-  - Controller identification via managedFields
+  - Controller identification via user hash tracking (correlates status updaters with spec updaters)
   - Log when drift would be blocked
   - Support both library mode and webhook mode
 
