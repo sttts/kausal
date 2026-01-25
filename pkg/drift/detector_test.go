@@ -194,6 +194,54 @@ func TestIsControllerByHash(t *testing.T) {
 	}
 }
 
+func TestCheckGeneration(t *testing.T) {
+	tests := []struct {
+		name          string
+		generation    int64
+		obsGeneration int64
+		wantDrift     bool
+		wantAllowed   bool
+	}{
+		{
+			name:          "gen != obsGen - expected change, no drift",
+			generation:    5,
+			obsGeneration: 4,
+			wantDrift:     false,
+			wantAllowed:   true,
+		},
+		{
+			name:          "gen == obsGen - drift detected",
+			generation:    5,
+			obsGeneration: 5,
+			wantDrift:     true,
+			wantAllowed:   true, // Phase 1: logging only
+		},
+		{
+			name:          "obsGen ahead of gen (edge case) - no drift",
+			generation:    3,
+			obsGeneration: 5,
+			wantDrift:     false,
+			wantAllowed:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parentState := &ParentState{
+				Generation:         tt.generation,
+				ObservedGeneration: tt.obsGeneration,
+			}
+			result := &DriftResult{
+				ParentState: parentState,
+			}
+
+			got := checkGeneration(result, parentState)
+			assert.Equal(t, tt.wantDrift, got.DriftDetected, "DriftDetected")
+			assert.Equal(t, tt.wantAllowed, got.Allowed, "Allowed")
+		})
+	}
+}
+
 func TestParentRef_String(t *testing.T) {
 	tests := []struct {
 		name   string
