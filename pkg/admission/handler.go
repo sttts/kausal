@@ -107,8 +107,8 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	fieldManager := extractFieldManager(req)
 	log = log.WithValues("fieldManager", fieldManager)
 
-	// Detect drift (use username for controller identification when fieldManager is empty)
-	driftResult, err := h.detector.DetectWithContext(ctx, obj, fieldManager, req.UserInfo.Username)
+	// Detect drift
+	driftResult, err := h.detector.DetectWithFieldManager(ctx, obj, fieldManager)
 	if err != nil {
 		log.Error(err, "drift detection failed")
 		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("drift detection failed: %w", err))

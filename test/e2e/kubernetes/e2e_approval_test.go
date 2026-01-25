@@ -15,7 +15,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
-	"k8s.io/client-go/util/retry"
 
 	"github.com/kausality-io/kausality/pkg/approval"
 	ktesting "github.com/kausality-io/kausality/pkg/testing"
@@ -445,43 +444,38 @@ func TestRejectionOverridesApproval(t *testing.T) {
 	assert.Contains(t, dep.Annotations, approval.ApprovalsAnnotation, "approval should still be present")
 	assert.Contains(t, dep.Annotations, approval.RejectionsAnnotation, "rejection should be present")
 
-	// Step 7: User modifies ReplicaSet (this is a new causal origin, not drift)
-	// Rejection only blocks drift (controller modifications), not user modifications
+	// Step 7: Verify rejection blocks ALL mutations (including user modifications)
 	t.Log("")
-	t.Log("Step 7: User modifying ReplicaSet - should succeed (new causal origin, not drift)...")
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
-		rs.Spec.Replicas = ptr(int32(2))
-		_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{})
-		return err
+	t.Log("Step 7: Attempting to modify ReplicaSet - rejection should block ALL mutations...")
+	rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
+	require.NoError(t, err)
+	rs.Spec.Replicas = ptr(int32(2))
+	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{})
+	require.Error(t, err, "rejection should block user modification")
+	assert.True(t, strings.Contains(err.Error(), "frozen by test") || strings.Contains(err.Error(), "rejected"),
+		"error should indicate rejection, got: %s", err.Error())
+	t.Logf("User modification blocked as expected: %v", err)
+
+	// Step 8: Verify controller drift is also blocked
+	t.Log("")
+	t.Log("Step 8: Verifying controller modifications are also blocked...")
+	rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
+	require.NoError(t, err)
+	rs.Spec.Replicas = ptr(int32(2))
+	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{
+		FieldManager: "deployment-controller",
 	})
-	require.NoError(t, err, "user modification should succeed (not drift)")
-	t.Log("User modification succeeded (new causal origin)")
-
-	// Step 8: Verify controller drift is blocked (replicas should stay at 2)
-	// The controller will try to fix it back to 1, but rejection blocks that
-	t.Log("")
-	t.Log("Step 8: Waiting to verify controller drift is blocked (replicas should stay at 2)...")
-	ktesting.Eventually(t, func() (bool, string) {
-		rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
-		if err != nil {
-			return false, fmt.Sprintf("error getting replicaset: %v", err)
-		}
-		if *rs.Spec.Replicas != 2 {
-			return false, fmt.Sprintf("replicas changed to %d (rejection didn't block controller!)", *rs.Spec.Replicas)
-		}
-		return true, "replicas still 2 (controller drift rejected)"
-	}, defaultTimeout, defaultInterval, "rejection should block controller drift")
-	t.Log("Controller drift blocked - replicas stayed at 2")
+	require.Error(t, err, "rejection should block controller modification")
+	errMsg := err.Error()
+	t.Logf("Controller modification blocked: %s", errMsg)
+	assert.True(t, strings.Contains(errMsg, "frozen by test") || strings.Contains(errMsg, "rejected"),
+		"rejection error should contain reason, got: %s", errMsg)
 
 	t.Log("")
-	t.Log("SUCCESS: Rejection overrides approval for controller drift")
+	t.Log("SUCCESS: Rejection overrides approval and blocks ALL mutations")
 	t.Log("- With approval only: drift was ALLOWED (controller fixed replicas)")
-	t.Log("- With approval + rejection: drift BLOCKED (user change persisted)")
-	t.Log("Note: Rejection only blocks drift (controller), not user modifications")
+	t.Log("- With approval + rejection: ALL changes BLOCKED (user and controller)")
+	t.Log("- Rejection error message contains specific reason")
 }
 
 // TestEnforceModeBlocksDrift verifies the difference between log mode and enforce mode.

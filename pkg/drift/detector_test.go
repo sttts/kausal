@@ -187,7 +187,7 @@ func TestDetectFromStateWithFieldManager(t *testing.T) {
 			expectReasonMatch: "expected change",
 		},
 		{
-			name: "empty fieldManager with known controller (no username) - different actor",
+			name: "empty fieldManager with known controller - treated as controller",
 			state: &ParentState{
 				Ref:                   ParentRef{Kind: "Deployment", Name: "test"},
 				Generation:            5,
@@ -197,7 +197,7 @@ func TestDetectFromStateWithFieldManager(t *testing.T) {
 			},
 			fieldManager:      "",
 			expectDrift:       false,
-			expectReasonMatch: "different actor", // Without username, can't identify as controller
+			expectReasonMatch: "expected change",
 		},
 		{
 			name: "non-empty fieldManager different from controller - different actor",
@@ -217,102 +217,6 @@ func TestDetectFromStateWithFieldManager(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := detector.DetectFromStateWithFieldManager(tt.state, tt.fieldManager)
-			assert.Equal(t, tt.expectDrift, result.DriftDetected, "DriftDetected (reason: %s)", result.Reason)
-			if tt.expectReasonMatch != "" {
-				assert.Contains(t, result.Reason, tt.expectReasonMatch, "Reason")
-			}
-		})
-	}
-}
-
-func TestDetectFromStateWithContext(t *testing.T) {
-	detector := &Detector{
-		lifecycleDetector: NewLifecycleDetector(),
-	}
-
-	tests := []struct {
-		name              string
-		state             *ParentState
-		fieldManager      string
-		username          string
-		expectDrift       bool
-		expectReasonMatch string
-	}{
-		{
-			name: "kube-controller-manager with matching username - controller",
-			state: &ParentState{
-				Ref:                   ParentRef{Kind: "Deployment", Name: "test"},
-				Generation:            5,
-				ObservedGeneration:    5,
-				HasObservedGeneration: true,
-				ControllerManager:     "kube-controller-manager",
-			},
-			fieldManager:      "", // Controllers often don't set this in requests
-			username:          "system:serviceaccount:kube-system:deployment-controller",
-			expectDrift:       true,
-			expectReasonMatch: "drift detected",
-		},
-		{
-			name: "kube-controller-manager with non-matching username - different actor",
-			state: &ParentState{
-				Ref:                   ParentRef{Kind: "Deployment", Name: "test"},
-				Generation:            5,
-				ObservedGeneration:    5,
-				HasObservedGeneration: true,
-				ControllerManager:     "kube-controller-manager",
-			},
-			fieldManager:      "",
-			username:          "kubernetes-admin", // Regular user
-			expectDrift:       false,
-			expectReasonMatch: "different actor",
-		},
-		{
-			name: "kube-controller-manager with replicaset-controller - controller",
-			state: &ParentState{
-				Ref:                   ParentRef{Kind: "ReplicaSet", Name: "test"},
-				Generation:            3,
-				ObservedGeneration:    3,
-				HasObservedGeneration: true,
-				ControllerManager:     "kube-controller-manager",
-			},
-			fieldManager:      "",
-			username:          "system:serviceaccount:kube-system:replicaset-controller",
-			expectDrift:       true,
-			expectReasonMatch: "drift detected",
-		},
-		{
-			name: "crossplane controller with matching username - controller",
-			state: &ParentState{
-				Ref:                   ParentRef{Kind: "Composite", Name: "test"},
-				Generation:            2,
-				ObservedGeneration:    2,
-				HasObservedGeneration: true,
-				ControllerManager:     "crossplane",
-			},
-			fieldManager:      "",
-			username:          "system:serviceaccount:crossplane-system:crossplane",
-			expectDrift:       true,
-			expectReasonMatch: "drift detected",
-		},
-		{
-			name: "explicit fieldManager match takes precedence",
-			state: &ParentState{
-				Ref:                   ParentRef{Kind: "Deployment", Name: "test"},
-				Generation:            5,
-				ObservedGeneration:    5,
-				HasObservedGeneration: true,
-				ControllerManager:     "my-controller",
-			},
-			fieldManager:      "my-controller",
-			username:          "any-user", // Doesn't matter when fieldManager matches
-			expectDrift:       true,
-			expectReasonMatch: "drift detected",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := detector.DetectFromStateWithContext(tt.state, tt.fieldManager, tt.username)
 			assert.Equal(t, tt.expectDrift, result.DriftDetected, "DriftDetected (reason: %s)", result.Reason)
 			if tt.expectReasonMatch != "" {
 				assert.Contains(t, result.Reason, tt.expectReasonMatch, "Reason")
