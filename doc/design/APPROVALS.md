@@ -123,7 +123,9 @@ metadata:
 
 Both annotations support legacy formats for backwards compatibility (`"true"` for freeze, plain RFC3339 timestamp for snooze).
 
-## ApprovalPolicy CRD
+## ApprovalPolicy CRD (Planned)
+
+**Note: This feature is not yet implemented.**
 
 For pattern-based exceptions (reduce per-object approval burden):
 

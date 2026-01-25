@@ -13,7 +13,7 @@ isController := IsControllerByHash(parent.controllers, child.updaters, request.u
 
 if NOT isController:
     # Different actor → new causal origin (not drift)
-    # Start new trace, may require approval via ApprovalPolicy
+    # Start new trace, currently allowed (ApprovalPolicy CRD planned)
 else if parent.generation != parent.status.observedGeneration:
     # Controller is reconciling → expected change → ALLOW
 else:
@@ -25,13 +25,13 @@ else:
 |-------|--------------|--------|
 | Controller | gen != obsGen | **Expected** — controller is reconciling |
 | Controller | gen == obsGen | **Drift** — controller changing without spec change |
-| Different actor | any | **New origin** — not drift, requires ApprovalPolicy |
+| Different actor | any | **New origin** — not drift, allowed (ApprovalPolicy planned) |
 
 **Drift** specifically means: the controller is making changes when the parent spec hasn't changed (gen == obsGen). This indicates unexpected reconciliation triggered by external factors (drift in cloud state, software updates, etc.).
 
-**Different actors** (kubectl, HPA, GitOps tools) are not considered drift — they're simply different causal chains. These may still require approval via ApprovalPolicy, but they're semantically different from controller drift.
+**Different actors** (kubectl, HPA, GitOps tools) are not considered drift — they're simply different causal chains that create new trace origins. Currently these are allowed; a planned ApprovalPolicy CRD will enable restricting certain actors.
 
-**Spec changes only**: Kausality only intercepts mutations to `spec`. Changes to `status` or `metadata` are ignored — no drift detection, no tracing, no approval required. Status updates are controllers reporting state, and metadata changes are typically administrative.
+**Spec changes only**: Kausality only processes spec mutations for drift detection and tracing. Status subresource updates are intercepted solely to record controller identity (adding user hash to the `controllers` annotation). Metadata-only changes don't trigger drift detection or tracing.
 
 ## Controller Identification
 
@@ -69,7 +69,7 @@ else → not controller → not drift (new causal origin)
 
 **Late installation:** On first run, parent won't have `kausality.io/controllers`. The system is lenient when it can't determine controller identity, allowing the annotation to build up over time.
 
-**Non-owning controllers (HPA, VPA):** These don't set controller ownerReferences. They appear as different actors and create new trace origins. This is NOT drift — it's simply a different causal chain. Use ApprovalPolicy to allow known actors like HPA.
+**Non-owning controllers (HPA, VPA):** These don't set controller ownerReferences. They appear as different actors and create new trace origins. This is NOT drift — it's simply a different causal chain. Currently these are allowed; a planned ApprovalPolicy CRD will enable restricting or explicitly allowing certain actors.
 
 **Webhook configuration:** Must intercept status subresource updates to record controller identity on parents.
 
@@ -173,11 +173,11 @@ When parent has `metadata.deletionTimestamp`:
             - If mode=once: remove approval, ALLOW
             - If mode=generation: ALLOW (pruned on next gen change)
             - If mode=always: ALLOW
-     c. Check ApprovalPolicy rules for pattern match
-        → If policy matches: ALLOW
-     d. Else:
-        - If parent has snooze annotation and not expired → DENY (no escalation)
-        - Else → DENY and escalate to Slack
+     c. Else:
+        - If parent has snooze annotation and not expired → suppress callbacks
+        - Send drift callback (if not snoozed)
+        - In enforce mode: DENY
+        - In log mode: ALLOW with warning
 ```
 
 ## Response Codes
@@ -189,8 +189,9 @@ When parent has `metadata.deletionTimestamp`:
 | Parent frozen | `allowed: false`, status 403 Forbidden, message includes user/reason/timestamp from freeze annotation |
 | Expected change (gen != obsGen) | `allowed: true` |
 | Drift with valid approval | `allowed: true` |
-| Drift with ApprovalPolicy match | `allowed: true` |
 | Drift rejected (explicit rejection) | `allowed: false`, status 403 Forbidden, reason from rejection |
 | Drift snoozed | Callbacks suppressed until expiry, mutations still follow normal drift rules |
-| Drift without approval (blocked) | `allowed: false`, status 403 Forbidden, escalate to Slack |
-| Parent not found | `allowed: false`, status 422 Unprocessable |
+| Drift without approval (enforce mode) | `allowed: false`, status 403 Forbidden, sends drift callback |
+| Drift without approval (log mode) | `allowed: true` with warning, sends drift callback |
+| No controller ownerReference | `allowed: true` (not a controller-managed child) |
+| Error resolving parent | `allowed: false`, status 500 Internal Server Error |
