@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -125,6 +126,15 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		)
 	}
 
+	// Check for freeze annotation on parent - blocks ALL mutations, not just drift
+	if driftResult.ParentRef != nil {
+		if frozen, reason := h.checkFreeze(ctx, driftResult.ParentRef, obj.GetNamespace(), log); frozen {
+			freezeMsg := fmt.Sprintf("mutation blocked: parent is frozen (%s)", reason)
+			log.Info("MUTATION FROZEN", logFields...)
+			return admission.Denied(freezeMsg)
+		}
+	}
+
 	// Track warnings to add to the response
 	var warnings []string
 
@@ -183,12 +193,12 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 			// Consume mode=once approvals and prune stale ones
 			h.consumeApproval(ctx, approvalResult, log)
 			// Send resolved notification
-			h.sendDriftCallback(ctx, req, obj, driftResult, v1alpha1.DriftReportPhaseResolved, log)
+			h.sendDriftCallback(ctx, req, obj, driftResult, approvalResult.parent, v1alpha1.DriftReportPhaseResolved, log)
 		} else {
 			driftMsg := "drift detected: no approval found for this mutation"
 			log.Info("DRIFT DETECTED - no approval found", logFields...)
 			// Send drift detected notification
-			h.sendDriftCallback(ctx, req, obj, driftResult, v1alpha1.DriftReportPhaseDetected, log)
+			h.sendDriftCallback(ctx, req, obj, driftResult, approvalResult.parent, v1alpha1.DriftReportPhaseDetected, log)
 			if enforceMode {
 				return admission.Denied(driftMsg)
 			}
@@ -514,6 +524,33 @@ func (h *Handler) fetchParent(ctx context.Context, ref *drift.ParentRef, childNa
 	return parent, nil
 }
 
+// checkFreeze checks if the parent has a freeze annotation.
+// Freeze blocks ALL mutations, not just drift - it's an emergency lockdown.
+func (h *Handler) checkFreeze(ctx context.Context, ref *drift.ParentRef, childNamespace string, log logr.Logger) (frozen bool, reason string) {
+	parent, err := h.fetchParent(ctx, ref, childNamespace)
+	if err != nil {
+		log.V(1).Info("failed to fetch parent for freeze check", "error", err)
+		return false, ""
+	}
+
+	annotations := parent.GetAnnotations()
+	if annotations == nil {
+		return false, ""
+	}
+
+	freezeValue, ok := annotations[approval.FreezeAnnotation]
+	if !ok || freezeValue == "" {
+		return false, ""
+	}
+
+	// Any non-empty value other than "false" is considered frozen
+	if freezeValue == "false" {
+		return false, ""
+	}
+
+	return true, freezeValue
+}
+
 // extractFieldManager extracts the fieldManager from admission request options.
 func extractFieldManager(req admission.Request) string {
 	if len(req.Options.Raw) == 0 {
@@ -537,8 +574,15 @@ func extractFieldManager(req admission.Request) string {
 }
 
 // sendDriftCallback sends a drift report to the configured webhook endpoint.
-func (h *Handler) sendDriftCallback(ctx context.Context, req admission.Request, obj client.Object, driftResult *drift.DriftResult, phase v1alpha1.DriftReportPhase, log logr.Logger) {
+// If the parent has an active snooze annotation, the callback is suppressed.
+func (h *Handler) sendDriftCallback(ctx context.Context, req admission.Request, obj client.Object, driftResult *drift.DriftResult, parent client.Object, phase v1alpha1.DriftReportPhase, log logr.Logger) {
 	if h.callbackSender == nil || !h.callbackSender.IsEnabled() {
+		return
+	}
+
+	// Check for snooze annotation on parent
+	if parent != nil && h.isParentSnoozed(parent, log) {
+		log.V(1).Info("drift callback suppressed (parent is snoozed)", "phase", phase)
 		return
 	}
 
@@ -550,6 +594,38 @@ func (h *Handler) sendDriftCallback(ctx context.Context, req admission.Request, 
 	// Send asynchronously to avoid blocking admission
 	h.callbackSender.SendAsync(ctx, report)
 	log.V(1).Info("drift callback sent", "phase", phase, "id", report.Spec.ID)
+}
+
+// isParentSnoozed checks if the parent has an active snooze annotation.
+func (h *Handler) isParentSnoozed(parent client.Object, log logr.Logger) bool {
+	if parent == nil {
+		return false
+	}
+
+	annotations := parent.GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+
+	snoozeUntil, ok := annotations[approval.SnoozeAnnotation]
+	if !ok || snoozeUntil == "" {
+		return false
+	}
+
+	// Parse the snooze timestamp
+	snoozeTime, err := time.Parse(time.RFC3339, snoozeUntil)
+	if err != nil {
+		log.V(1).Info("invalid snooze-until timestamp", "value", snoozeUntil, "error", err)
+		return false
+	}
+
+	// Check if snooze is still active
+	if time.Now().Before(snoozeTime) {
+		log.V(1).Info("parent is snoozed", "until", snoozeUntil)
+		return true
+	}
+
+	return false
 }
 
 // buildDriftReport constructs a DriftReport from the admission context.

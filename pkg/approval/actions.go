@@ -14,6 +14,10 @@ import (
 const (
 	// SnoozeAnnotation is the annotation key for snooze-until timestamp.
 	SnoozeAnnotation = "kausality.io/snooze-until"
+
+	// FreezeAnnotation is the annotation key for freeze lockdown.
+	// When set to "true", ALL child mutations are blocked, even expected changes.
+	FreezeAnnotation = "kausality.io/freeze"
 )
 
 // ObjectRef identifies a Kubernetes object for actions.

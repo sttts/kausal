@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -283,16 +284,22 @@ func TestApprovalAllowsDrift(t *testing.T) {
 	t.Log("SUCCESS: Drift was allowed - controller successfully fixed the ReplicaSet")
 }
 
-// TestRejectionBlocksDrift verifies that kausality.io/rejections annotation blocks
-// drift even when there might otherwise be approval.
-func TestRejectionBlocksDrift(t *testing.T) {
+// TestRejectionOverridesApproval verifies that kausality.io/rejections annotation blocks
+// drift EVEN when there is an approval for the same child.
+// This proves rejection takes precedence over approval.
+func TestRejectionOverridesApproval(t *testing.T) {
 	ctx := context.Background()
 
-	t.Log("=== Testing Rejection Blocks Drift ===")
-	t.Log("When a parent has a rejection for a child, drift should be blocked.")
+	t.Log("=== Testing Rejection Overrides Approval ===")
+	t.Log("When a parent has BOTH approval AND rejection for a child,")
+	t.Log("rejection takes precedence and drift should be blocked.")
+	t.Log("")
+	t.Log("This test proves rejection makes a difference by showing:")
+	t.Log("1. With approval alone, drift IS allowed (counter-example)")
+	t.Log("2. With approval + rejection, drift is BLOCKED (rejection wins)")
 
 	// Step 1: Create a namespace with enforce mode
-	enforceNS := fmt.Sprintf("reject-drift-%s", rand.String(4))
+	enforceNS := fmt.Sprintf("reject-override-%s", rand.String(4))
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: enforceNS,
@@ -309,12 +316,27 @@ func TestRejectionBlocksDrift(t *testing.T) {
 	})
 	t.Logf("Created namespace %s with enforce mode", enforceNS)
 
-	// Step 2: Create a Deployment (no rejection yet - add it after stabilization)
-	name := fmt.Sprintf("reject-drift-%s", rand.String(4))
+	// Step 2: Create a Deployment WITH approval for all ReplicaSets
+	t.Log("")
+	t.Log("Step 2: Creating Deployment WITH approval annotation...")
+	name := fmt.Sprintf("reject-override-%s", rand.String(4))
+
+	approvals := []approval.Approval{{
+		APIVersion: "apps/v1",
+		Kind:       "ReplicaSet",
+		Name:       "*", // Approve all ReplicaSets
+		Mode:       approval.ModeAlways,
+	}}
+	approvalData, err := json.Marshal(approvals)
+	require.NoError(t, err)
+
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: enforceNS,
+			Annotations: map[string]string{
+				approval.ApprovalsAnnotation: string(approvalData),
+			},
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr(int32(1)),
@@ -337,7 +359,7 @@ func TestRejectionBlocksDrift(t *testing.T) {
 
 	_, err = clientset.AppsV1().Deployments(enforceNS).Create(ctx, deployment, metav1.CreateOptions{})
 	require.NoError(t, err)
-	t.Logf("Created Deployment %s", name)
+	t.Logf("Created Deployment %s with approval annotation", name)
 
 	// Step 3: Wait for stabilization
 	ktesting.Eventually(t, func() (bool, string) {
@@ -371,7 +393,34 @@ func TestRejectionBlocksDrift(t *testing.T) {
 		return true, fmt.Sprintf("found replicaset %s", rsName)
 	}, defaultTimeout, defaultInterval, "replicaset should exist")
 
-	// Step 5: Add rejection annotation to the Deployment
+	// Step 5: COUNTER-EXAMPLE - Verify approval allows drift
+	t.Log("")
+	t.Log("Step 5: COUNTER-EXAMPLE - Verify approval allows drift...")
+	t.Log("Modifying ReplicaSet replicas from 1 to 2...")
+
+	rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
+	require.NoError(t, err)
+	rs.Spec.Replicas = ptr(int32(2))
+	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	t.Log("Modified ReplicaSet spec.replicas to 2")
+
+	// Wait for controller to fix it back (should be allowed with approval)
+	ktesting.Eventually(t, func() (bool, string) {
+		rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Sprintf("error getting replicaset: %v", err)
+		}
+		if *rs.Spec.Replicas != 1 {
+			return false, fmt.Sprintf("replicas still %d, waiting for controller to fix it", *rs.Spec.Replicas)
+		}
+		return true, "controller fixed replicas back to 1 (drift allowed with approval)"
+	}, defaultTimeout, defaultInterval, "approval should allow drift")
+	t.Log("COUNTER-EXAMPLE PASSED: With approval alone, controller fixed the drift")
+
+	// Step 6: Add rejection annotation (keeping approval)
+	t.Log("")
+	t.Log("Step 6: Adding rejection annotation (keeping approval)...")
 	dep, err := clientset.AppsV1().Deployments(enforceNS).Get(ctx, name, metav1.GetOptions{})
 	require.NoError(t, err)
 
@@ -384,16 +433,20 @@ func TestRejectionBlocksDrift(t *testing.T) {
 	rejectionData, err := json.Marshal(rejections)
 	require.NoError(t, err)
 
-	if dep.Annotations == nil {
-		dep.Annotations = make(map[string]string)
-	}
 	dep.Annotations[approval.RejectionsAnnotation] = string(rejectionData)
 	_, err = clientset.AppsV1().Deployments(enforceNS).Update(ctx, dep, metav1.UpdateOptions{})
 	require.NoError(t, err)
-	t.Logf("Added rejection annotation to Deployment for ReplicaSet %s", rsName)
+	t.Logf("Added rejection annotation (approval still present)")
 
-	// Step 6: Directly modify the ReplicaSet's spec.replicas
-	// Use retry loop to handle conflicts with controller
+	// Verify both annotations exist
+	dep, err = clientset.AppsV1().Deployments(enforceNS).Get(ctx, name, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Contains(t, dep.Annotations, approval.ApprovalsAnnotation, "approval should still be present")
+	assert.Contains(t, dep.Annotations, approval.RejectionsAnnotation, "rejection should be present")
+
+	// Step 7: Modify ReplicaSet again - now rejection should block
+	t.Log("")
+	t.Log("Step 7: Modifying ReplicaSet again - rejection should block...")
 	ktesting.Eventually(t, func() (bool, string) {
 		rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
 		if err != nil {
@@ -406,25 +459,236 @@ func TestRejectionBlocksDrift(t *testing.T) {
 		}
 		return true, "successfully modified replicas to 2"
 	}, defaultTimeout, defaultInterval, "should be able to modify replicaset")
-	t.Log("Directly modified ReplicaSet spec.replicas from 1 to 2")
+	t.Log("Modified ReplicaSet spec.replicas to 2")
 
-	// Step 7: Verify our modification persists (controller can't fix it due to rejection)
+	// Step 8: Verify modification persists (rejection blocks controller)
+	t.Log("")
+	t.Log("Step 8: Verifying rejection blocks controller...")
 	ktesting.Eventually(t, func() (bool, string) {
 		rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
 		if err != nil {
 			return false, fmt.Sprintf("error getting replicaset: %v", err)
 		}
 		if *rs.Spec.Replicas != 2 {
-			return false, fmt.Sprintf("replicas changed to %d (drift was allowed despite rejection!)", *rs.Spec.Replicas)
+			return false, fmt.Sprintf("replicas changed to %d (rejection didn't block!)", *rs.Spec.Replicas)
 		}
-		return true, "replicas still 2 (drift blocked by rejection)"
+		return true, "replicas still 2 (rejection blocked drift)"
 	}, defaultTimeout, defaultInterval, "rejection should block drift")
 
-	// Verify rejection annotation is still present
-	dep, err = clientset.AppsV1().Deployments(enforceNS).Get(ctx, name, metav1.GetOptions{})
+	// Step 9: Verify rejection error message contains the specific reason
+	t.Log("")
+	t.Log("Step 9: Verifying rejection error message contains specific reason...")
+	t.Log("Attempting update with controller's fieldManager to capture rejection message...")
+
+	// Try to update as if we were the deployment-controller
+	rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
 	require.NoError(t, err)
-	assert.Contains(t, dep.Annotations, approval.RejectionsAnnotation)
+	rs.Spec.Replicas = ptr(int32(1)) // Try to fix back to 1 (what controller would do)
+	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{
+		FieldManager: "deployment-controller", // Use the controller's fieldManager
+	})
+
+	// The update should fail with a rejection message containing our reason
+	require.Error(t, err, "update should be rejected")
+	errMsg := err.Error()
+	t.Logf("Rejection error message: %s", errMsg)
+
+	// Verify the error message contains the specific rejection reason
+	assert.True(t, strings.Contains(errMsg, "frozen by test"),
+		"rejection error should contain the specific reason 'frozen by test', got: %s", errMsg)
 
 	t.Log("")
-	t.Log("SUCCESS: Drift was blocked by rejection annotation")
+	t.Log("SUCCESS: Rejection overrides approval")
+	t.Log("- With approval only: drift was ALLOWED (controller fixed replicas)")
+	t.Log("- With approval + rejection: drift was BLOCKED (replicas stayed at 2)")
+	t.Log("- Rejection error message contains specific reason: 'frozen by test'")
+}
+
+// TestEnforceModeBlocksDrift verifies the difference between log mode and enforce mode.
+// This proves that mode annotation actually controls enforcement.
+func TestEnforceModeBlocksDrift(t *testing.T) {
+	ctx := context.Background()
+
+	t.Log("=== Testing Enforce Mode vs Log Mode ===")
+	t.Log("This test proves mode annotation controls enforcement:")
+	t.Log("1. In log mode: drift is allowed (controller can fix)")
+	t.Log("2. In enforce mode: drift is blocked (controller cannot fix)")
+
+	// Part 1: Log mode (drift allowed)
+	t.Log("")
+	t.Log("=== PART 1: LOG MODE ===")
+
+	logNS := fmt.Sprintf("log-mode-%s", rand.String(4))
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: logNS,
+			Annotations: map[string]string{
+				"kausality.io/mode": "log",
+			},
+		},
+	}
+	_, err := clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		t.Logf("Cleanup: Deleting namespace %s", logNS)
+		_ = clientset.CoreV1().Namespaces().Delete(ctx, logNS, metav1.DeleteOptions{})
+	})
+	t.Logf("Created namespace %s with log mode", logNS)
+
+	// Create deployment in log mode namespace
+	logName := fmt.Sprintf("log-mode-%s", rand.String(4))
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      logName,
+			Namespace: logNS,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr(int32(1)),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": logName},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": logName},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "nginx",
+						Image: "nginx:1.24-alpine",
+					}},
+				},
+			},
+		},
+	}
+
+	_, err = clientset.AppsV1().Deployments(logNS).Create(ctx, deployment, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	// Wait for stabilization
+	ktesting.Eventually(t, func() (bool, string) {
+		dep, err := clientset.AppsV1().Deployments(logNS).Get(ctx, logName, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Sprintf("error getting deployment: %v", err)
+		}
+		if dep.Status.ObservedGeneration != dep.Generation || dep.Status.AvailableReplicas < 1 {
+			return false, "not stable yet"
+		}
+		return true, "deployment stabilized"
+	}, defaultTimeout, defaultInterval, "deployment should stabilize")
+
+	// Get ReplicaSet
+	var logRSName string
+	ktesting.Eventually(t, func() (bool, string) {
+		rsList, err := clientset.AppsV1().ReplicaSets(logNS).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("app=%s", logName),
+		})
+		if err != nil || len(rsList.Items) == 0 {
+			return false, "no replicaset found"
+		}
+		logRSName = rsList.Items[0].Name
+		return true, "found replicaset"
+	}, defaultTimeout, defaultInterval, "replicaset should exist")
+
+	// Modify ReplicaSet in log mode
+	rs, err := clientset.AppsV1().ReplicaSets(logNS).Get(ctx, logRSName, metav1.GetOptions{})
+	require.NoError(t, err)
+	rs.Spec.Replicas = ptr(int32(2))
+	_, err = clientset.AppsV1().ReplicaSets(logNS).Update(ctx, rs, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	t.Log("Modified ReplicaSet replicas to 2 in log mode namespace")
+
+	// In log mode, controller should fix it back
+	ktesting.Eventually(t, func() (bool, string) {
+		rs, err := clientset.AppsV1().ReplicaSets(logNS).Get(ctx, logRSName, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Sprintf("error: %v", err)
+		}
+		if *rs.Spec.Replicas != 1 {
+			return false, fmt.Sprintf("replicas=%d, waiting for controller", *rs.Spec.Replicas)
+		}
+		return true, "controller fixed replicas (drift allowed in log mode)"
+	}, defaultTimeout, defaultInterval, "drift should be allowed in log mode")
+	t.Log("LOG MODE: Controller fixed replicas back to 1 (drift allowed)")
+
+	// Part 2: Enforce mode (drift blocked)
+	t.Log("")
+	t.Log("=== PART 2: ENFORCE MODE ===")
+
+	enforceNS := fmt.Sprintf("enforce-mode-%s", rand.String(4))
+	ns = &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: enforceNS,
+			Annotations: map[string]string{
+				"kausality.io/mode": "enforce",
+			},
+		},
+	}
+	_, err = clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		t.Logf("Cleanup: Deleting namespace %s", enforceNS)
+		_ = clientset.CoreV1().Namespaces().Delete(ctx, enforceNS, metav1.DeleteOptions{})
+	})
+	t.Logf("Created namespace %s with enforce mode", enforceNS)
+
+	// Create deployment in enforce mode namespace
+	enforceName := fmt.Sprintf("enforce-mode-%s", rand.String(4))
+	deployment.Name = enforceName
+	deployment.Namespace = enforceNS
+	deployment.Spec.Selector.MatchLabels["app"] = enforceName
+	deployment.Spec.Template.Labels["app"] = enforceName
+
+	_, err = clientset.AppsV1().Deployments(enforceNS).Create(ctx, deployment, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	// Wait for stabilization
+	ktesting.Eventually(t, func() (bool, string) {
+		dep, err := clientset.AppsV1().Deployments(enforceNS).Get(ctx, enforceName, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Sprintf("error getting deployment: %v", err)
+		}
+		if dep.Status.ObservedGeneration != dep.Generation || dep.Status.AvailableReplicas < 1 {
+			return false, "not stable yet"
+		}
+		return true, "deployment stabilized"
+	}, defaultTimeout, defaultInterval, "deployment should stabilize")
+
+	// Get ReplicaSet
+	var enforceRSName string
+	ktesting.Eventually(t, func() (bool, string) {
+		rsList, err := clientset.AppsV1().ReplicaSets(enforceNS).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("app=%s", enforceName),
+		})
+		if err != nil || len(rsList.Items) == 0 {
+			return false, "no replicaset found"
+		}
+		enforceRSName = rsList.Items[0].Name
+		return true, "found replicaset"
+	}, defaultTimeout, defaultInterval, "replicaset should exist")
+
+	// Modify ReplicaSet in enforce mode
+	rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, enforceRSName, metav1.GetOptions{})
+	require.NoError(t, err)
+	rs.Spec.Replicas = ptr(int32(2))
+	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	t.Log("Modified ReplicaSet replicas to 2 in enforce mode namespace")
+
+	// In enforce mode, modification should persist (controller blocked)
+	ktesting.Eventually(t, func() (bool, string) {
+		rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, enforceRSName, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Sprintf("error: %v", err)
+		}
+		if *rs.Spec.Replicas != 2 {
+			return false, fmt.Sprintf("replicas changed to %d (drift allowed in enforce mode!)", *rs.Spec.Replicas)
+		}
+		return true, "replicas still 2 (drift blocked in enforce mode)"
+	}, defaultTimeout, defaultInterval, "drift should be blocked in enforce mode")
+	t.Log("ENFORCE MODE: Replicas stayed at 2 (drift blocked)")
+
+	t.Log("")
+	t.Log("SUCCESS: Mode annotation controls enforcement")
+	t.Log("- Log mode: drift allowed, controller fixed replicas to 1")
+	t.Log("- Enforce mode: drift blocked, replicas stayed at 2")
 }
