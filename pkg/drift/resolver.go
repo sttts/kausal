@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
+
+	"github.com/kausality-io/kausality/pkg/controller"
 )
 
 // ParentResolver resolves the controller parent of a Kubernetes object.
@@ -101,14 +104,35 @@ func extractParentState(parent *unstructured.Unstructured, ownerRef metav1.Owner
 		state.DeletionTimestamp = parent.GetDeletionTimestamp()
 	}
 
-	// Check for kausality.io/initialized annotation
+	// Check annotations
 	if annotations := parent.GetAnnotations(); annotations != nil {
 		if annotations["kausality.io/initialized"] == "true" {
 			state.IsInitialized = true
 		}
+
+		// Extract controller hashes from kausality.io/controllers annotation
+		if controllers := annotations[controller.ControllersAnnotation]; controllers != "" {
+			state.Controllers = parseControllerHashes(controllers)
+		}
 	}
 
 	return state
+}
+
+// parseControllerHashes splits a comma-separated hash string.
+func parseControllerHashes(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 // extractConditionObservedGeneration extracts observedGeneration from Synced or Ready conditions.

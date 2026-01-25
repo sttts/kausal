@@ -7,6 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/kausality-io/kausality/pkg/controller"
 )
 
 func TestDetectFromState(t *testing.T) {
@@ -309,6 +311,105 @@ func TestLifecycleDetector_DetectPhase(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			phase := detector.DetectPhase(tt.state)
 			assert.Equal(t, tt.expect, phase)
+		})
+	}
+}
+
+func TestIsControllerByHash(t *testing.T) {
+	detector := &Detector{
+		lifecycleDetector: NewLifecycleDetector(),
+	}
+
+	// Generate some user hashes
+	user1 := "system:serviceaccount:kube-system:deployment-controller"
+	user2 := "admin@example.com"
+	user3 := "kubectl-user"
+
+	hash1 := controller.HashUsername(user1)
+	hash2 := controller.HashUsername(user2)
+	hash3 := controller.HashUsername(user3)
+
+	tests := []struct {
+		name             string
+		parentState      *ParentState
+		username         string
+		childUpdaters    []string
+		wantController   bool
+		wantCanDetermine bool
+	}{
+		{
+			name: "CREATE - first updater is controller",
+			parentState: &ParentState{
+				Ref:         ParentRef{Kind: "Deployment", Name: "test"},
+				Controllers: nil, // No controllers annotation yet
+			},
+			username:         user1,
+			childUpdaters:    nil, // No updaters yet (CREATE)
+			wantController:   true,
+			wantCanDetermine: true,
+		},
+		{
+			name: "single updater matches - controller",
+			parentState: &ParentState{
+				Ref:         ParentRef{Kind: "Deployment", Name: "test"},
+				Controllers: []string{hash1},
+			},
+			username:         user1,
+			childUpdaters:    []string{hash1},
+			wantController:   true,
+			wantCanDetermine: true,
+		},
+		{
+			name: "single updater doesn't match - not controller",
+			parentState: &ParentState{
+				Ref:         ParentRef{Kind: "Deployment", Name: "test"},
+				Controllers: []string{hash1},
+			},
+			username:         user2,
+			childUpdaters:    []string{hash1},
+			wantController:   false,
+			wantCanDetermine: true,
+		},
+		{
+			name: "multiple updaters with parent controllers - intersection match",
+			parentState: &ParentState{
+				Ref:         ParentRef{Kind: "Deployment", Name: "test"},
+				Controllers: []string{hash1, hash2},
+			},
+			username:         user1,
+			childUpdaters:    []string{hash1, hash3},
+			wantController:   true,
+			wantCanDetermine: true,
+		},
+		{
+			name: "multiple updaters with parent controllers - not in intersection",
+			parentState: &ParentState{
+				Ref:         ParentRef{Kind: "Deployment", Name: "test"},
+				Controllers: []string{hash1},
+			},
+			username:         user3,
+			childUpdaters:    []string{hash1, hash3},
+			wantController:   false,
+			wantCanDetermine: true,
+		},
+		{
+			name: "multiple updaters no parent controllers - can't determine",
+			parentState: &ParentState{
+				Ref:         ParentRef{Kind: "Deployment", Name: "test"},
+				Controllers: nil,
+			},
+			username:         user1,
+			childUpdaters:    []string{hash1, hash2},
+			wantController:   false,
+			wantCanDetermine: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isController, canDetermine := detector.isControllerByHash(tt.parentState, tt.username, tt.childUpdaters)
+			assert.Equal(t, tt.wantController, isController, "isController")
+			assert.Equal(t, tt.wantCanDetermine, canDetermine, "canDetermine")
 		})
 	}
 }

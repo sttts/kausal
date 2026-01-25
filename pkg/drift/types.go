@@ -54,6 +54,9 @@ type ParentState struct {
 	// ControllerManager is the manager that owns status.observedGeneration.
 	// This identifies the controller that reconciles this object.
 	ControllerManager string
+	// Controllers contains user hashes from kausality.io/controllers annotation.
+	// These are users who have updated the parent's status.
+	Controllers []string
 	// DeletionTimestamp is set if the parent is being deleted.
 	DeletionTimestamp *metav1.Time
 	// Conditions are the parent's status conditions for lifecycle detection.
