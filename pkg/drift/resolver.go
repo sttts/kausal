@@ -76,7 +76,7 @@ func extractParentState(parent *unstructured.Unstructured, ownerRef metav1.Owner
 		Generation: parent.GetGeneration(),
 	}
 
-	// Extract status.observedGeneration
+	// Extract status.observedGeneration, falling back to condition observedGeneration
 	if status, ok, _ := unstructured.NestedMap(parent.Object, "status"); ok {
 		if obsGen, ok, _ := unstructured.NestedInt64(status, "observedGeneration"); ok {
 			state.ObservedGeneration = obsGen
@@ -85,6 +85,12 @@ func extractParentState(parent *unstructured.Unstructured, ownerRef metav1.Owner
 
 		// Extract conditions for lifecycle detection
 		state.Conditions = extractConditions(status)
+
+		// Fallback: if no status.observedGeneration, check Synced/Ready conditions
+		// This supports Crossplane which stores observedGeneration in conditions
+		if !state.HasObservedGeneration {
+			state.ObservedGeneration, state.HasObservedGeneration = extractConditionObservedGeneration(status)
+		}
 	}
 
 	// Find the controller manager from managedFields
@@ -103,6 +109,46 @@ func extractParentState(parent *unstructured.Unstructured, ownerRef metav1.Owner
 	}
 
 	return state
+}
+
+// extractConditionObservedGeneration extracts observedGeneration from Synced or Ready conditions.
+// Returns the observedGeneration and whether it was found.
+// Prefers Synced condition, falls back to Ready.
+func extractConditionObservedGeneration(status map[string]interface{}) (int64, bool) {
+	conditionsRaw, ok, _ := unstructured.NestedSlice(status, "conditions")
+	if !ok {
+		return 0, false
+	}
+
+	// First pass: look for Synced condition
+	for _, c := range conditionsRaw {
+		condMap, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		condType, _, _ := unstructured.NestedString(condMap, "type")
+		if condType == "Synced" {
+			if obsGen, ok, _ := unstructured.NestedInt64(condMap, "observedGeneration"); ok {
+				return obsGen, true
+			}
+		}
+	}
+
+	// Second pass: fall back to Ready condition
+	for _, c := range conditionsRaw {
+		condMap, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		condType, _, _ := unstructured.NestedString(condMap, "type")
+		if condType == "Ready" {
+			if obsGen, ok, _ := unstructured.NestedInt64(condMap, "observedGeneration"); ok {
+				return obsGen, true
+			}
+		}
+	}
+
+	return 0, false
 }
 
 // extractConditions extracts metav1.Condition list from status map.
@@ -151,9 +197,18 @@ func ParentRefFromOwnerRef(ref metav1.OwnerReference, namespace string) ParentRe
 
 // findControllerManager finds the manager that owns status.observedGeneration.
 // This identifies the controller that reconciles the object.
+// It checks both status.observedGeneration and status.conditions[].observedGeneration
+// to support Crossplane which stores observedGeneration in conditions.
 func findControllerManager(managedFields []metav1.ManagedFieldsEntry) string {
 	// Path to status.observedGeneration
 	obsGenPath := fieldpath.MakePathOrDie("status", "observedGeneration")
+
+	// Paths to condition observedGeneration (Synced and Ready)
+	// These are structured as: status.conditions[type=X].observedGeneration
+	syncedObsGenPath := fieldpath.MakePathOrDie("status", "conditions",
+		fieldpath.KeyByFields("type", "Synced"), "observedGeneration")
+	readyObsGenPath := fieldpath.MakePathOrDie("status", "conditions",
+		fieldpath.KeyByFields("type", "Ready"), "observedGeneration")
 
 	for _, entry := range managedFields {
 		// Skip non-status updates
@@ -173,6 +228,11 @@ func findControllerManager(managedFields []metav1.ManagedFieldsEntry) string {
 
 		// Check if this manager owns status.observedGeneration
 		if set.Has(obsGenPath) {
+			return entry.Manager
+		}
+
+		// Fallback: check condition observedGeneration (for Crossplane)
+		if set.Has(syncedObsGenPath) || set.Has(readyObsGenPath) {
 			return entry.Manager
 		}
 	}
