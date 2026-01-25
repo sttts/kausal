@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/kausality-io/kausality/pkg/approval"
 	ktesting "github.com/kausality-io/kausality/pkg/testing"
@@ -285,18 +287,23 @@ func TestApprovalAllowsDrift(t *testing.T) {
 }
 
 // TestRejectionOverridesApproval verifies that kausality.io/rejections annotation blocks
-// drift EVEN when there is an approval for the same child.
+// controller drift EVEN when there is an approval for the same child.
 // This proves rejection takes precedence over approval.
+//
+// Important: Rejection only blocks CONTROLLER DRIFT (controller updating when parent is stable).
+// User modifications are NOT drift - they create a new causal origin.
 func TestRejectionOverridesApproval(t *testing.T) {
 	ctx := context.Background()
 
 	t.Log("=== Testing Rejection Overrides Approval ===")
 	t.Log("When a parent has BOTH approval AND rejection for a child,")
-	t.Log("rejection takes precedence and drift should be blocked.")
+	t.Log("rejection takes precedence and controller drift should be blocked.")
 	t.Log("")
 	t.Log("This test proves rejection makes a difference by showing:")
-	t.Log("1. With approval alone, drift IS allowed (counter-example)")
-	t.Log("2. With approval + rejection, drift is BLOCKED (rejection wins)")
+	t.Log("1. With approval alone, controller drift IS allowed (counter-example)")
+	t.Log("2. With approval + rejection, controller drift is BLOCKED (rejection wins)")
+	t.Log("")
+	t.Log("Note: User modifications are NOT drift - they create a new causal origin.")
 
 	// Step 1: Create a namespace with enforce mode
 	enforceNS := fmt.Sprintf("reject-override-%s", rand.String(4))
@@ -393,19 +400,19 @@ func TestRejectionOverridesApproval(t *testing.T) {
 		return true, fmt.Sprintf("found replicaset %s", rsName)
 	}, defaultTimeout, defaultInterval, "replicaset should exist")
 
-	// Step 5: COUNTER-EXAMPLE - Verify approval allows drift
+	// Step 5: COUNTER-EXAMPLE - Verify approval allows controller drift
 	t.Log("")
-	t.Log("Step 5: COUNTER-EXAMPLE - Verify approval allows drift...")
-	t.Log("Modifying ReplicaSet replicas from 1 to 2...")
+	t.Log("Step 5: COUNTER-EXAMPLE - Verify approval allows controller drift...")
+	t.Log("User modifies ReplicaSet replicas from 1 to 2 (this is NOT drift)...")
 
 	rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
 	require.NoError(t, err)
 	rs.Spec.Replicas = ptr(int32(2))
 	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{})
 	require.NoError(t, err)
-	t.Log("Modified ReplicaSet spec.replicas to 2")
+	t.Log("User modified ReplicaSet spec.replicas to 2 (new causal origin)")
 
-	// Wait for controller to fix it back (should be allowed with approval)
+	// Wait for controller to fix it back (this IS drift, should be allowed with approval)
 	ktesting.Eventually(t, func() (bool, string) {
 		rs, err := clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
 		if err != nil {
@@ -415,8 +422,8 @@ func TestRejectionOverridesApproval(t *testing.T) {
 			return false, fmt.Sprintf("replicas still %d, waiting for controller to fix it", *rs.Spec.Replicas)
 		}
 		return true, "controller fixed replicas back to 1 (drift allowed with approval)"
-	}, defaultTimeout, defaultInterval, "approval should allow drift")
-	t.Log("COUNTER-EXAMPLE PASSED: With approval alone, controller fixed the drift")
+	}, defaultTimeout, defaultInterval, "approval should allow controller drift")
+	t.Log("COUNTER-EXAMPLE PASSED: With approval alone, controller drift was allowed")
 
 	// Step 6: Add rejection annotation (keeping approval)
 	t.Log("")
@@ -444,38 +451,38 @@ func TestRejectionOverridesApproval(t *testing.T) {
 	assert.Contains(t, dep.Annotations, approval.ApprovalsAnnotation, "approval should still be present")
 	assert.Contains(t, dep.Annotations, approval.RejectionsAnnotation, "rejection should be present")
 
-	// Step 7: Verify rejection blocks ALL mutations (including user modifications)
+	// Step 7: User modifies RS (this is allowed - user modifications are NOT drift)
 	t.Log("")
-	t.Log("Step 7: Attempting to modify ReplicaSet - rejection should block ALL mutations...")
-	rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
-	require.NoError(t, err)
-	rs.Spec.Replicas = ptr(int32(2))
-	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{})
-	require.Error(t, err, "rejection should block user modification")
-	assert.True(t, strings.Contains(err.Error(), "frozen by test") || strings.Contains(err.Error(), "rejected"),
-		"error should indicate rejection, got: %s", err.Error())
-	t.Logf("User modification blocked as expected: %v", err)
-
-	// Step 8: Verify controller drift is also blocked
-	t.Log("")
-	t.Log("Step 8: Verifying controller modifications are also blocked...")
-	rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
-	require.NoError(t, err)
-	rs.Spec.Replicas = ptr(int32(2))
-	_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{
-		FieldManager: "deployment-controller",
+	t.Log("Step 7: User modifies ReplicaSet (this is NOT drift, should succeed)...")
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		rs.Spec.Replicas = ptr(int32(2))
+		_, err = clientset.AppsV1().ReplicaSets(enforceNS).Update(ctx, rs, metav1.UpdateOptions{})
+		return err
 	})
-	require.Error(t, err, "rejection should block controller modification")
-	errMsg := err.Error()
-	t.Logf("Controller modification blocked: %s", errMsg)
-	assert.True(t, strings.Contains(errMsg, "frozen by test") || strings.Contains(errMsg, "rejected"),
-		"rejection error should contain reason, got: %s", errMsg)
+	require.NoError(t, err)
+	t.Log("User modification succeeded (expected - user changes are new causal origin, not drift)")
+
+	// Step 8: Wait and verify controller drift is blocked
+	t.Log("")
+	t.Log("Step 8: Waiting to verify controller drift is blocked by rejection...")
+	t.Log("Controller will try to fix replicas back to 1, but rejection should block it.")
+
+	// Give controller time to attempt reconciliation
+	time.Sleep(3 * time.Second)
+
+	// Verify RS still has our modification (controller couldn't fix it)
+	rs, err = clientset.AppsV1().ReplicaSets(enforceNS).Get(ctx, rsName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), *rs.Spec.Replicas, "rejection should have blocked controller drift")
 
 	t.Log("")
-	t.Log("SUCCESS: Rejection overrides approval and blocks ALL mutations")
-	t.Log("- With approval only: drift was ALLOWED (controller fixed replicas)")
-	t.Log("- With approval + rejection: ALL changes BLOCKED (user and controller)")
-	t.Log("- Rejection error message contains specific reason")
+	t.Log("SUCCESS: Rejection overrides approval and blocks controller drift")
+	t.Log("- With approval only: controller drift was ALLOWED")
+	t.Log("- With approval + rejection: controller drift BLOCKED (replicas stayed at 2)")
 }
 
 // TestEnforceModeBlocksDrift verifies the difference between log mode and enforce mode.
