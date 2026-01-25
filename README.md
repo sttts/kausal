@@ -75,7 +75,7 @@ When a mutation is intercepted, Kausality:
 - Updates to referenced resources (ClusterRelease, MachineClass)
 - Controller behavior changes from software updates
 
-**Different actors** (kubectl, HPA, GitOps tools) are not considered drift — they start new causal chains. Use ApprovalPolicy to control which actors are allowed.
+**Different actors** (kubectl, HPA, GitOps tools) are not considered drift — they start new causal chains and are currently allowed. A planned ApprovalPolicy CRD will enable restricting certain actors.
 
 ### Lifecycle Phases
 
