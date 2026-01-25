@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -95,7 +94,7 @@ func TestTwoLevelCompositionDrift(t *testing.T) {
 	t.Log("")
 	t.Log("Step 2: Creating Compositions...")
 
-	xserviceComposition := makeXServiceComposition(suffix, testNamespace)
+	xserviceComposition := makeXServiceComposition(suffix)
 	_, err = dynamicClient.Resource(compositionGVR).Create(ctx, xserviceComposition, metav1.CreateOptions{})
 	require.NoError(t, err, "failed to create XService composition")
 	t.Log("Created XService -> NopResource composition")
@@ -163,10 +162,10 @@ func TestTwoLevelCompositionDrift(t *testing.T) {
 
 	t.Logf("Found XService: %s", xserviceName)
 
-	// Wait for NopResource (namespaced in Crossplane 2)
+	// Wait for NopResource (cluster-scoped)
 	var nopResourceName string
 	ktesting.Eventually(t, func() (bool, string) {
-		list, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).List(ctx, metav1.ListOptions{})
+		list, err := dynamicClient.Resource(nopResourceGVR).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return false, fmt.Sprintf("error listing NopResources: %v", err)
 		}
@@ -187,7 +186,7 @@ func TestTwoLevelCompositionDrift(t *testing.T) {
 	// Wait for NopResource to become Ready
 	t.Log("Waiting for NopResource to become Ready...")
 	ktesting.Eventually(t, func() (bool, string) {
-		obj, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Get(ctx, nopResourceName, metav1.GetOptions{})
+		obj, err := dynamicClient.Resource(nopResourceGVR).Get(ctx, nopResourceName, metav1.GetOptions{})
 		if err != nil {
 			return false, fmt.Sprintf("error getting NopResource: %v", err)
 		}
@@ -243,7 +242,7 @@ func TestTwoLevelCompositionDrift(t *testing.T) {
 	t.Log("Step 5: User modifies NopResource spec directly...")
 	t.Log("This is NOT drift - it's a user action creating a new causal origin.")
 
-	nopResource, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Get(ctx, nopResourceName, metav1.GetOptions{})
+	nopResource, err := dynamicClient.Resource(nopResourceGVR).Get(ctx, nopResourceName, metav1.GetOptions{})
 	require.NoError(t, err)
 
 	// Modify spec to diverge from composition-defined state
@@ -256,7 +255,7 @@ func TestTwoLevelCompositionDrift(t *testing.T) {
 	}, "spec", "forProvider", "conditionAfter")
 	require.NoError(t, err)
 
-	_, err = dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Update(ctx, nopResource, metav1.UpdateOptions{})
+	_, err = dynamicClient.Resource(nopResourceGVR).Update(ctx, nopResource, metav1.UpdateOptions{})
 	if err != nil {
 		if apierrors.IsForbidden(err) {
 			t.Logf("User modification blocked: %v", err)
@@ -279,7 +278,7 @@ func TestTwoLevelCompositionDrift(t *testing.T) {
 
 	// Check if NopResource was reverted (correction succeeded)
 	// or still has our value (correction was blocked)
-	nopResource, err = dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Get(ctx, nopResourceName, metav1.GetOptions{})
+	nopResource, err = dynamicClient.Resource(nopResourceGVR).Get(ctx, nopResourceName, metav1.GetOptions{})
 	require.NoError(t, err)
 
 	conditionAfter, found, _ := unstructured.NestedSlice(nopResource.Object, "spec", "forProvider", "conditionAfter")
@@ -403,7 +402,7 @@ func makeXPlatformXRD() *unstructured.Unstructured {
 	}
 }
 
-func makeXServiceComposition(suffix, namespace string) *unstructured.Unstructured {
+func makeXServiceComposition(suffix string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "apiextensions.crossplane.io/v1",
@@ -432,9 +431,6 @@ func makeXServiceComposition(suffix, namespace string) *unstructured.Unstructure
 									"base": map[string]interface{}{
 										"apiVersion": "nop.crossplane.io/v1alpha1",
 										"kind":       "NopResource",
-										"metadata": map[string]interface{}{
-											"namespace": namespace,
-										},
 										"spec": map[string]interface{}{
 											"forProvider": map[string]interface{}{
 												"conditionAfter": []interface{}{

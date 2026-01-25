@@ -114,16 +114,16 @@ func TestNopResourceWithTraceLabels(t *testing.T) {
 	t.Log("")
 	t.Logf("Step 1: Creating NopResource %q with trace labels...", name)
 
-	nopResource := makeNopResource(name, testNamespace, map[string]string{
+	nopResource := makeNopResource(name, map[string]string{
 		"kausality.io/trace-ticket":    "CROSSPLANE-001",
 		"kausality.io/trace-component": "infrastructure",
 	})
 
-	_, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Create(ctx, nopResource, metav1.CreateOptions{})
+	_, err := dynamicClient.Resource(nopResourceGVR).Create(ctx, nopResource, metav1.CreateOptions{})
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		t.Logf("Cleanup: Deleting NopResource %s", name)
-		_ = dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Delete(ctx, name, metav1.DeleteOptions{})
+		_ = dynamicClient.Resource(nopResourceGVR).Delete(ctx, name, metav1.DeleteOptions{})
 	})
 	t.Logf("NopResource %q created with trace labels", name)
 
@@ -132,7 +132,7 @@ func TestNopResourceWithTraceLabels(t *testing.T) {
 	t.Log("Step 2: Waiting for NopResource to become Ready...")
 
 	ktesting.Eventually(t, func() (bool, string) {
-		obj, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Get(ctx, name, metav1.GetOptions{})
+		obj, err := dynamicClient.Resource(nopResourceGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, fmt.Sprintf("error getting NopResource: %v", err)
 		}
@@ -165,7 +165,7 @@ func TestNopResourceWithTraceLabels(t *testing.T) {
 	t.Log("Step 3: Checking NopResource for trace annotation...")
 	t.Log("Note: Direct user creation may not have trace annotation (no parent)")
 
-	obj, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Get(ctx, name, metav1.GetOptions{})
+	obj, err := dynamicClient.Resource(nopResourceGVR).Get(ctx, name, metav1.GetOptions{})
 	require.NoError(t, err)
 
 	traceAnnotation, found, _ := unstructured.NestedString(obj.Object, "metadata", "annotations", "kausality.io/trace")
@@ -241,16 +241,16 @@ func TestMultipleNopResources(t *testing.T) {
 		name := fmt.Sprintf("multi-nop-%d-%s", i+1, rand.String(4))
 		names[i] = name
 
-		nopResource := makeNopResource(name, testNamespace, map[string]string{
+		nopResource := makeNopResource(name, map[string]string{
 			"kausality.io/trace-batch": fmt.Sprintf("batch-%d", i+1),
 		})
 
-		_, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Create(ctx, nopResource, metav1.CreateOptions{})
+		_, err := dynamicClient.Resource(nopResourceGVR).Create(ctx, nopResource, metav1.CreateOptions{})
 		require.NoError(t, err)
 		t.Logf("Created NopResource %s", name)
 
 		t.Cleanup(func() {
-			_ = dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Delete(ctx, name, metav1.DeleteOptions{})
+			_ = dynamicClient.Resource(nopResourceGVR).Delete(ctx, name, metav1.DeleteOptions{})
 		})
 	}
 
@@ -260,7 +260,7 @@ func TestMultipleNopResources(t *testing.T) {
 
 	for _, name := range names {
 		ktesting.Eventually(t, func() (bool, string) {
-			obj, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Get(ctx, name, metav1.GetOptions{})
+			obj, err := dynamicClient.Resource(nopResourceGVR).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
 				return false, fmt.Sprintf("error getting NopResource %s: %v", name, err)
 			}
@@ -293,7 +293,7 @@ func TestMultipleNopResources(t *testing.T) {
 	t.Log("")
 	t.Log("Step 3: Verifying all NopResources exist...")
 
-	list, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).List(ctx, metav1.ListOptions{})
+	list, err := dynamicClient.Resource(nopResourceGVR).List(ctx, metav1.ListOptions{})
 	require.NoError(t, err)
 
 	t.Logf("Found %d NopResources in namespace %s", len(list.Items), testNamespace)
@@ -348,12 +348,12 @@ func TestProviderReconciliation(t *testing.T) {
 	t.Log("")
 	t.Logf("Step 1: Creating NopResource %q...", name)
 
-	nopResource := makeNopResource(name, testNamespace, nil)
-	_, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Create(ctx, nopResource, metav1.CreateOptions{})
+	nopResource := makeNopResource(name, nil)
+	_, err := dynamicClient.Resource(nopResourceGVR).Create(ctx, nopResource, metav1.CreateOptions{})
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		t.Logf("Cleanup: Deleting NopResource %s", name)
-		_ = dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Delete(ctx, name, metav1.DeleteOptions{})
+		_ = dynamicClient.Resource(nopResourceGVR).Delete(ctx, name, metav1.DeleteOptions{})
 	})
 
 	// Step 2: Wait for Ready
@@ -361,7 +361,7 @@ func TestProviderReconciliation(t *testing.T) {
 	t.Log("Step 2: Waiting for NopResource to become Ready...")
 
 	ktesting.Eventually(t, func() (bool, string) {
-		obj, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Get(ctx, name, metav1.GetOptions{})
+		obj, err := dynamicClient.Resource(nopResourceGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, fmt.Sprintf("error getting NopResource: %v", err)
 		}
@@ -390,7 +390,7 @@ func TestProviderReconciliation(t *testing.T) {
 	t.Log("")
 	t.Log("Step 3: Updating NopResource to trigger re-reconciliation...")
 
-	obj, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Get(ctx, name, metav1.GetOptions{})
+	obj, err := dynamicClient.Resource(nopResourceGVR).Get(ctx, name, metav1.GetOptions{})
 	require.NoError(t, err)
 
 	// Update the conditionAfter to trigger a change
@@ -403,7 +403,7 @@ func TestProviderReconciliation(t *testing.T) {
 	}, "spec", "forProvider", "conditionAfter")
 	require.NoError(t, err)
 
-	_, err = dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Update(ctx, obj, metav1.UpdateOptions{})
+	_, err = dynamicClient.Resource(nopResourceGVR).Update(ctx, obj, metav1.UpdateOptions{})
 	require.NoError(t, err)
 	t.Log("NopResource updated")
 
@@ -412,7 +412,7 @@ func TestProviderReconciliation(t *testing.T) {
 	t.Log("Step 4: Waiting for provider to re-reconcile...")
 
 	ktesting.Eventually(t, func() (bool, string) {
-		obj, err := dynamicClient.Resource(nopResourceGVR).Namespace(testNamespace).Get(ctx, name, metav1.GetOptions{})
+		obj, err := dynamicClient.Resource(nopResourceGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, fmt.Sprintf("error getting NopResource: %v", err)
 		}

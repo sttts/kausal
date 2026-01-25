@@ -302,6 +302,13 @@ require.NoError(t, err)
 assert.Equal(t, "expected", actual)
 ```
 
+6. **How to cause drift for testing** - Drift is when a controller updates a child while the parent is stable. To trigger drift in tests:
+   - Change the **spec** of a child resource (not annotations/labels)
+   - Or delete a child resource
+   - This causes the parent controller to reconcile and try to correct the drift
+   - The controller's correction attempt is what kausality detects as drift
+   - Important: User modifications are NOT drift - they're a new causal origin. Only the controller's subsequent correction is drift.
+
 ## Commit Conventions
 
 Follow the commit message format:
@@ -323,6 +330,30 @@ Example areas:
 - `webhook`: Webhook server
 - `doc`: Documentation
 - `test`: Test improvements
+
+## Testing Requirements
+
+**CRITICAL: Tests MUST be green before marking any task complete. NO EXCEPTIONS.**
+
+A task involving code or test changes is NOT done until:
+1. All relevant tests pass (unit, envtest, or e2e as appropriate)
+2. You have actually run the tests and seen them pass
+3. Never mark a task complete based on "should work" - verify it works
+
+**You MUST run tests before committing any code changes.** There is no value in adding or changing tests without verifying they pass.
+
+- **Unit tests**: Run `make test` for any code changes
+- **Envtests**: Run `make envtest` when changing admission/drift logic
+- **E2E tests**: Run against a local kind cluster during development:
+  ```bash
+  # Development: run tests against existing local kind cluster
+  go test ./test/e2e/crossplane -tags=e2e -v
+
+  # CI only: full setup with new cluster
+  ./test/e2e/crossplane/run.sh
+  ```
+
+Never commit test changes without running them first.
 
 ## Code Style
 

@@ -94,14 +94,14 @@ func TestMain(m *testing.M) {
 }
 
 // makeNopResource creates an unstructured NopResource with the given name and optional labels.
-func makeNopResource(name, namespace string, labels map[string]string) *unstructured.Unstructured {
+// NopResource is cluster-scoped in Crossplane, so no namespace is set.
+func makeNopResource(name string, labels map[string]string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "nop.crossplane.io/v1alpha1",
 			"kind":       "NopResource",
 			"metadata": map[string]interface{}{
-				"name":      name,
-				"namespace": namespace,
+				"name": name,
 			},
 			"spec": map[string]interface{}{
 				"forProvider": map[string]interface{}{
