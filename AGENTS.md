@@ -12,7 +12,7 @@ make lint           # Run golangci-lint
 make lint-fix       # Run golangci-lint with auto-fix
 
 # Run a single test
-go test ./pkg/drift -run TestDetectFromState -v
+go test ./pkg/drift -run TestDetectFromState_Lifecycle -v
 
 # Run envtests only
 go test ./pkg/admission -tags=envtest -run TestDriftDetection -v

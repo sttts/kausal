@@ -43,13 +43,6 @@ func NewDetectorWithOptions(c client.Client, opts ...DetectorOption) *Detector {
 	return d
 }
 
-// Detect checks whether a mutation to the given object would be considered drift.
-// It resolves the controller parent and compares generation with observedGeneration.
-// Deprecated: Use DetectWithFieldManager for proper controller identification.
-func (d *Detector) Detect(ctx context.Context, obj client.Object) (*DriftResult, error) {
-	return d.DetectWithFieldManager(ctx, obj, "")
-}
-
 // DetectWithFieldManager checks whether a mutation would be considered drift.
 // It uses the fieldManager to identify if the request comes from the controller.
 // Deprecated: Use DetectWithUsername for proper controller identification via user hash tracking.
@@ -275,13 +268,6 @@ func IsControllerRequest(parentState *ParentState, fieldManager string) bool {
 		return true
 	}
 	return fieldManager == parentState.ControllerManager
-}
-
-// DetectFromState checks for drift given an already-resolved parent state.
-// This is useful when the parent state is already available.
-// Deprecated: Use DetectFromStateWithFieldManager for proper controller identification.
-func (d *Detector) DetectFromState(parentState *ParentState) *DriftResult {
-	return d.DetectFromStateWithFieldManager(parentState, "")
 }
 
 // DetectFromStateWithFieldManager checks for drift given parent state and fieldManager.

@@ -11,7 +11,9 @@ import (
 	"github.com/kausality-io/kausality/pkg/controller"
 )
 
-func TestDetectFromState(t *testing.T) {
+// TestDetectFromState_Lifecycle tests lifecycle phases and drift detection using DetectFromStateWithFieldManager.
+// Uses empty fieldManager which assumes the request is from the controller.
+func TestDetectFromState_Lifecycle(t *testing.T) {
 	detector := &Detector{
 		lifecycleDetector: NewLifecycleDetector(),
 	}
@@ -111,7 +113,8 @@ func TestDetectFromState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := detector.DetectFromState(tt.state)
+			// Use empty fieldManager which assumes controller request
+			result := detector.DetectFromStateWithFieldManager(tt.state, "")
 			assert.Equal(t, tt.expectAllowed, result.Allowed, "Allowed")
 			assert.Equal(t, tt.expectDrift, result.DriftDetected, "DriftDetected")
 			if tt.state != nil {
