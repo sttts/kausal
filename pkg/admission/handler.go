@@ -12,6 +12,7 @@ import (
 	jsonpatch "gomodules.xyz/jsonpatch/v2"
 
 	admissionv1 "k8s.io/api/admission/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -36,6 +37,7 @@ type Handler struct {
 	approvalChecker   *approval.Checker
 	callbackSender    callback.ReportSender
 	controllerTracker *controller.Tracker
+	lifecycleDetector *drift.LifecycleDetector
 	config            *config.Config
 	log               logr.Logger
 }
@@ -66,6 +68,7 @@ func NewHandler(cfg Config) *Handler {
 		approvalChecker:   approval.NewChecker(),
 		callbackSender:    cfg.CallbackSender,
 		controllerTracker: controller.NewTracker(cfg.Client, log),
+		lifecycleDetector: drift.NewLifecycleDetector(),
 		config:            driftConfig,
 		log:               log,
 	}
@@ -168,6 +171,21 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 			freezeMsg := fmt.Sprintf("mutation blocked: parent %s", freeze.String())
 			log.Info("MUTATION FROZEN", append(logFields, "freezeUser", freeze.User, "freezeMessage", freeze.Message)...)
 			return admission.Denied(freezeMsg)
+		}
+	}
+
+	// Record parent's phase async if transitioning to initialized
+	// Lazy fetch: only fetch parent if phase would actually change
+	if driftResult.ParentRef != nil && driftResult.ParentState != nil && driftResult.LifecyclePhase == drift.PhaseInitialized {
+		currentPhase := driftResult.ParentState.PhaseFromAnnotation
+		if currentPhase != drift.PhaseValueInitialized {
+			// Parent is now initialized but annotation doesn't reflect it - record async
+			parent, err := h.fetchParent(ctx, driftResult.ParentRef, obj.GetNamespace())
+			if err != nil {
+				log.V(1).Info("failed to fetch parent for phase recording", "error", err)
+			} else if parent != nil {
+				h.controllerTracker.RecordPhaseAsync(ctx, parent, drift.PhaseValueInitialized)
+			}
 		}
 	}
 
@@ -362,6 +380,13 @@ func (h *Handler) handleStatusUpdate(ctx context.Context, req admission.Request,
 
 	// Record controller asynchronously as backup (in case sync patch fails)
 	h.controllerTracker.RecordControllerAsync(ctx, obj, userID)
+
+	// Record phase async (status update may have changed conditions)
+	parentState := extractParentStateFromObject(obj)
+	phase := h.lifecycleDetector.DetectPhase(parentState)
+	if phase != drift.PhaseDeleting {
+		h.controllerTracker.RecordPhaseAsync(ctx, obj, string(phase))
+	}
 
 	// Compute annotations: preserve kausality annotations and add user to controllers
 	var oldObj, newObj unstructured.Unstructured
@@ -942,4 +967,100 @@ func (h *Handler) getNamespaceMetadata(ctx context.Context, namespace string) (l
 		return nil, nil, err
 	}
 	return ns.GetLabels(), ns.GetAnnotations(), nil
+}
+
+// extractParentStateFromObject extracts drift-relevant state from an object being used as a parent.
+// This is used when processing status updates to determine the parent's lifecycle phase.
+func extractParentStateFromObject(obj client.Object) *drift.ParentState {
+	state := &drift.ParentState{
+		Generation:        obj.GetGeneration(),
+		DeletionTimestamp: obj.GetDeletionTimestamp(),
+	}
+
+	// Extract from unstructured if available
+	unstrObj, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		return state
+	}
+
+	// Extract status.observedGeneration and conditions
+	if status, ok, _ := unstructured.NestedMap(unstrObj.Object, "status"); ok {
+		if obsGen, ok, _ := unstructured.NestedInt64(status, "observedGeneration"); ok {
+			state.ObservedGeneration = obsGen
+			state.HasObservedGeneration = true
+		}
+		state.Conditions = extractConditionsFromStatus(status)
+
+		// Fallback: check conditions for observedGeneration (Crossplane style)
+		if !state.HasObservedGeneration {
+			state.ObservedGeneration, state.HasObservedGeneration = extractConditionObservedGeneration(status)
+		}
+	}
+
+	// Check phase annotation
+	if annotations := obj.GetAnnotations(); annotations != nil {
+		state.PhaseFromAnnotation = annotations[drift.PhaseAnnotation]
+		if state.PhaseFromAnnotation == drift.PhaseValueInitialized {
+			state.IsInitialized = true
+		}
+	}
+
+	return state
+}
+
+// extractConditionsFromStatus extracts conditions from a status map.
+func extractConditionsFromStatus(status map[string]interface{}) []metav1.Condition {
+	conditionsRaw, ok, _ := unstructured.NestedSlice(status, "conditions")
+	if !ok {
+		return nil
+	}
+
+	var conditions []metav1.Condition
+	for _, c := range conditionsRaw {
+		condMap, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		cond := metav1.Condition{}
+		if t, ok, _ := unstructured.NestedString(condMap, "type"); ok {
+			cond.Type = t
+		}
+		if s, ok, _ := unstructured.NestedString(condMap, "status"); ok {
+			cond.Status = metav1.ConditionStatus(s)
+		}
+		conditions = append(conditions, cond)
+	}
+	return conditions
+}
+
+// extractConditionObservedGeneration extracts observedGeneration from Synced or Ready conditions.
+func extractConditionObservedGeneration(status map[string]interface{}) (int64, bool) {
+	conditionsRaw, ok, _ := unstructured.NestedSlice(status, "conditions")
+	if !ok {
+		return 0, false
+	}
+
+	var readyObsGen int64
+	var foundReady bool
+
+	for _, c := range conditionsRaw {
+		condMap, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		condType, _, _ := unstructured.NestedString(condMap, "type")
+		obsGen, hasObsGen, _ := unstructured.NestedInt64(condMap, "observedGeneration")
+		if !hasObsGen {
+			continue
+		}
+		if condType == drift.ConditionTypeSynced {
+			return obsGen, true
+		}
+		if condType == drift.ConditionTypeReady {
+			readyObsGen = obsGen
+			foundReady = true
+		}
+	}
+	return readyObsGen, foundReady
 }

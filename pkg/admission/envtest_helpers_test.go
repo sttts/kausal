@@ -12,6 +12,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/kausality-io/kausality/pkg/drift"
 )
 
 // =============================================================================
@@ -72,6 +74,38 @@ func createDeployment(t *testing.T, ctx context.Context, namePrefix string) *app
 	}
 
 	return deploy
+}
+
+// markParentStable sets the phase annotation and status to make a parent appear stable (initialized).
+// This simulates a parent that has completed initialization and is now in steady state.
+func markParentStable(t *testing.T, ctx context.Context, deploy *appsv1.Deployment) {
+	t.Helper()
+
+	// Set phase annotation
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	deploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment annotations: %v", err)
+	}
+
+	// Re-fetch and set status
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	deploy.Status.ObservedGeneration = deploy.Generation
+	deploy.Status.Replicas = 1
+	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+		t.Fatalf("failed to update deployment status: %v", err)
+	}
+
+	// Re-fetch to get final state
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
 }
 
 func createReplicaSetWithOwner(t *testing.T, ctx context.Context, namePrefix string, owner *appsv1.Deployment) *appsv1.ReplicaSet {

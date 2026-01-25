@@ -142,17 +142,8 @@ func TestDriftDetection_Drift(t *testing.T) {
 	// Create parent deployment
 	deploy := createDeployment(t, ctx, "drift-deploy")
 
-	// Set observedGeneration = generation (stable state)
-	deploy.Status.ObservedGeneration = deploy.Generation
-	deploy.Status.Replicas = 1
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
-		t.Fatalf("failed to update deployment status: %v", err)
-	}
-
-	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
-		t.Fatalf("failed to get deployment: %v", err)
-	}
+	// Mark parent as stable (initialized with matching observedGeneration)
+	markParentStable(t, ctx, deploy)
 
 	t.Logf("Deployment: gen=%d, obsGen=%d", deploy.Generation, deploy.Status.ObservedGeneration)
 
@@ -366,6 +357,20 @@ func TestMultipleOwnerRefs_OnlyControllerMatters(t *testing.T) {
 	controllerDeploy := createDeployment(t, ctx, "multi-owner-ctrl")
 	nonControllerDeploy := createDeployment(t, ctx, "multi-owner-nonctrl")
 
+	// Mark controller as initialized first
+	annotations := controllerDeploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	controllerDeploy.SetAnnotations(annotations)
+	if err := k8sClient.Update(ctx, controllerDeploy); err != nil {
+		t.Fatalf("failed to update controller annotations: %v", err)
+	}
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerDeploy), controllerDeploy); err != nil {
+		t.Fatalf("failed to get controller deploy: %v", err)
+	}
+
 	// Set controller as stable (drift scenario)
 	controllerDeploy.Status.ObservedGeneration = controllerDeploy.Generation
 	if err := k8sClient.Status().Update(ctx, controllerDeploy); err != nil {
@@ -459,7 +464,7 @@ func TestMultipleOwnerRefs_OnlyControllerMatters(t *testing.T) {
 }
 
 // =============================================================================
-// Test: Lifecycle Phase - Initialized Annotation Persistence
+// Test: Lifecycle Phase - Phase Annotation Persistence
 // =============================================================================
 
 func TestLifecyclePhase_InitializedAnnotation(t *testing.T) {
@@ -468,9 +473,9 @@ func TestLifecyclePhase_InitializedAnnotation(t *testing.T) {
 	// Create parent deployment
 	deploy := createDeployment(t, ctx, "init-annot-deploy")
 
-	// Set the kausality.io/initialized annotation (simulating previous webhook setting it)
+	// Set the kausality.io/phase annotation (simulating previous webhook setting it)
 	deploy.SetAnnotations(map[string]string{
-		"kausality.io/initialized": "true",
+		drift.PhaseAnnotation: drift.PhaseValueInitialized,
 	})
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)

@@ -182,7 +182,7 @@ func TestExtractParentState(t *testing.T) {
 			wantConds: 2,
 		},
 		{
-			name: "parent with initialized annotation",
+			name: "parent with phase=initialized annotation",
 			parent: &unstructured.Unstructured{
 				Object: map[string]interface{}{
 					"apiVersion": "apps/v1",
@@ -192,7 +192,7 @@ func TestExtractParentState(t *testing.T) {
 						"namespace":  "default",
 						"generation": int64(1),
 						"annotations": map[string]interface{}{
-							"kausality.io/initialized": "true",
+							PhaseAnnotation: PhaseValueInitialized,
 						},
 					},
 				},

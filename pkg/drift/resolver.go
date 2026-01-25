@@ -100,7 +100,9 @@ func extractParentState(parent *unstructured.Unstructured, ownerRef metav1.Owner
 
 	// Check annotations
 	if annotations := parent.GetAnnotations(); annotations != nil {
-		if annotations["kausality.io/initialized"] == "true" {
+		// Read phase annotation
+		state.PhaseFromAnnotation = annotations[PhaseAnnotation]
+		if state.PhaseFromAnnotation == PhaseValueInitialized {
 			state.IsInitialized = true
 		}
 

@@ -87,10 +87,16 @@ Kausality handles different lifecycle phases:
 | **Initialized** | Drift detection applies |
 | **Deleting** | Allow all changes (cleanup phase) |
 
+The `kausality.io/phase` annotation tracks the lifecycle phase:
+- `initializing` — Resource not yet ready
+- `initialized` — Resource reached steady state (persisted, never downgraded)
+- `deleting` — Not stored; derived from `deletionTimestamp`
+
 Initialization is detected by checking (in order):
-1. `Initialized=True` condition
-2. `Ready=True` condition
-3. `status.observedGeneration` exists
+1. `kausality.io/phase: "initialized"` annotation
+2. `Initialized=True` condition
+3. `Ready=True` condition
+4. `status.observedGeneration` matches `generation` AND (`Synced=True` OR `Ready=True`)
 
 ### Trace Labels
 

@@ -28,7 +28,9 @@ const (
 	MaxHashes = 5
 
 	// asyncUpdateDelay is the delay before async annotation updates.
-	asyncUpdateDelay = 5 * time.Second
+	// Set to 0 for immediate recording - necessary because status subresource
+	// patches to metadata don't persist (Kubernetes only updates .status).
+	asyncUpdateDelay = 0
 )
 
 // Tracker tracks controller identity via user hash annotations.
@@ -119,8 +121,15 @@ func (t *Tracker) RecordControllerAsync(ctx context.Context, obj client.Object, 
 	t.pendingMu.Unlock()
 
 	if !alreadyPending {
-		// Schedule the update
-		go t.flushAfterDelay(ctx, obj, asyncUpdateDelay)
+		if asyncUpdateDelay == 0 {
+			// Synchronous recording - necessary because status subresource
+			// patches to metadata don't persist, so we must update via direct API call
+			// before the next admission request arrives.
+			t.flushAfterDelay(ctx, obj, 0)
+		} else {
+			// Schedule the update with delay
+			go t.flushAfterDelay(ctx, obj, asyncUpdateDelay)
+		}
 	}
 }
 
@@ -224,6 +233,103 @@ func Intersect(a, b []string) []string {
 		}
 	}
 	return result
+}
+
+// PhaseAnnotation stores the lifecycle phase of a parent resource.
+const PhaseAnnotation = "kausality.io/phase"
+
+// Phase values for the PhaseAnnotation.
+const (
+	PhaseValueInitializing = "initializing"
+	PhaseValueInitialized  = "initialized"
+)
+
+// RecordPhaseAsync schedules an async update to set the phase annotation.
+// Only records when transitioning to initialized (never downgrades).
+func (t *Tracker) RecordPhaseAsync(ctx context.Context, obj client.Object, phase string) {
+	// Skip if deleting (derived from metadata, not stored)
+	if obj.GetDeletionTimestamp() != nil {
+		return
+	}
+
+	// Skip if already initialized (don't downgrade)
+	annotations := obj.GetAnnotations()
+	if annotations != nil && annotations[PhaseAnnotation] == PhaseValueInitialized {
+		return
+	}
+
+	// Skip if setting to same value
+	if annotations != nil && annotations[PhaseAnnotation] == phase {
+		return
+	}
+
+	key := objectKey(obj) + "/phase"
+
+	t.pendingMu.Lock()
+	_, alreadyPending := t.pending[key]
+	t.pending[key] = phase
+	t.pendingMu.Unlock()
+
+	if !alreadyPending {
+		go t.flushPhaseAfterDelay(ctx, obj, asyncUpdateDelay)
+	}
+}
+
+// flushPhaseAfterDelay waits and then updates the phase annotation.
+func (t *Tracker) flushPhaseAfterDelay(ctx context.Context, obj client.Object, delay time.Duration) {
+	time.Sleep(delay)
+
+	key := objectKey(obj) + "/phase"
+	t.pendingMu.Lock()
+	phase, ok := t.pending[key]
+	delete(t.pending, key)
+	t.pendingMu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	log := t.log.WithValues(
+		"kind", objectTypeName(obj),
+		"namespace", obj.GetNamespace(),
+		"name", obj.GetName(),
+		"phase", phase,
+	)
+
+	// DeepCopy once, reuse in retry loop
+	current := obj.DeepCopyObject().(client.Object)
+
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if err := t.client.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+			return err
+		}
+
+		// Check if already initialized (don't downgrade)
+		annotations := current.GetAnnotations()
+		if annotations != nil && annotations[PhaseAnnotation] == PhaseValueInitialized {
+			return nil
+		}
+
+		// Check if already set to this value
+		if annotations != nil && annotations[PhaseAnnotation] == phase {
+			return nil
+		}
+
+		// Initialize map only before writing
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations[PhaseAnnotation] = phase
+		current.SetAnnotations(annotations)
+
+		return t.client.Update(ctx, current)
+	})
+
+	if err != nil {
+		log.Error(err, "failed to update phase annotation")
+	} else {
+		log.V(1).Info("recorded phase")
+	}
 }
 
 // objectKey returns a string key for an object.

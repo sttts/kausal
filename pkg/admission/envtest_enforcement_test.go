@@ -25,6 +25,7 @@ import (
 	kadmission "github.com/kausality-io/kausality/pkg/admission"
 	"github.com/kausality-io/kausality/pkg/approval"
 	"github.com/kausality-io/kausality/pkg/config"
+	"github.com/kausality-io/kausality/pkg/drift"
 )
 
 func TestEnforceMode_RejectionDenied(t *testing.T) {
@@ -49,6 +50,7 @@ func TestEnforceMode_RejectionDenied(t *testing.T) {
 		annotations = make(map[string]string)
 	}
 	annotations[approval.RejectionsAnnotation] = string(rejectionsJSON)
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
@@ -112,8 +114,8 @@ func TestEnforceMode_RejectionDenied(t *testing.T) {
 		t.Fatalf("failed to marshal new replicaset: %v", err)
 	}
 
-	// Use the actual controller manager from parent's managedFields
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -162,30 +164,11 @@ func TestEnforceMode_UnapprovedDriftDenied(t *testing.T) {
 	// Create child ReplicaSet
 	rs := createReplicaSetWithOwner(t, ctx, "enforce-drift-rs", deploy)
 
-	// Set parent as ready (drift scenario: gen == obsGen) - NO approvals
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
-		t.Fatalf("failed to get deployment: %v", err)
-	}
-	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
-		t.Fatalf("failed to update status: %v", err)
-	}
+	// Mark parent as stable (initialized with matching observedGeneration) - NO approvals
+	markParentStable(t, ctx, deploy)
 
-	// Re-fetch to get managedFields
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
-		t.Fatalf("failed to get deployment: %v", err)
-	}
-
-	// Find the controller manager from managedFields
-	var controllerManager string
-	for _, mf := range deploy.ManagedFields {
-		if mf.Subresource == "status" {
-			controllerManager = mf.Manager
-			break
-		}
-	}
-	t.Logf("Parent state: gen=%d, obsGen=%d, controllerManager=%q",
-		deploy.Generation, deploy.Status.ObservedGeneration, controllerManager)
+	t.Logf("Parent state: gen=%d, obsGen=%d",
+		deploy.Generation, deploy.Status.ObservedGeneration)
 
 	// Create handler with ENFORCE MODE for apps/replicasets
 	handler := kadmission.NewHandler(kadmission.Config{
@@ -220,8 +203,8 @@ func TestEnforceMode_UnapprovedDriftDenied(t *testing.T) {
 		t.Fatalf("failed to marshal new replicaset: %v", err)
 	}
 
-	// Use the actual controller manager from parent's managedFields
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -346,8 +329,8 @@ func TestEnforceMode_ApprovedDriftAllowed(t *testing.T) {
 		t.Fatalf("failed to marshal new replicaset: %v", err)
 	}
 
-	// Use the actual controller manager from parent's managedFields
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -386,28 +369,8 @@ func TestNonEnforceMode_ReturnsWarnings(t *testing.T) {
 	// Create child ReplicaSet
 	rs := createReplicaSetWithOwner(t, ctx, "warning-rs", deploy)
 
-	// Set parent as ready (drift scenario: gen == obsGen) - NO approvals
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
-		t.Fatalf("failed to get deployment: %v", err)
-	}
-	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
-		t.Fatalf("failed to update status: %v", err)
-	}
-
-	// Re-fetch to get managedFields
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
-		t.Fatalf("failed to get deployment: %v", err)
-	}
-
-	// Find the controller manager from managedFields
-	var controllerManager string
-	for _, mf := range deploy.ManagedFields {
-		if mf.Subresource == "status" {
-			controllerManager = mf.Manager
-			break
-		}
-	}
+	// Mark parent as stable (initialized with matching observedGeneration) - NO approvals
+	markParentStable(t, ctx, deploy)
 
 	// Create handler WITHOUT enforce mode (default log mode)
 	handler := kadmission.NewHandler(kadmission.Config{
@@ -442,7 +405,8 @@ func TestNonEnforceMode_ReturnsWarnings(t *testing.T) {
 		t.Fatalf("failed to marshal new replicaset: %v", err)
 	}
 
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -507,21 +471,20 @@ func TestEnforceMode_NamespaceList(t *testing.T) {
 	// Create child ReplicaSet
 	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-list-rs", nsName, deploy)
 
+	// Mark parent as initialized
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	deploy.SetAnnotations(annotations)
+	require.NoError(t, k8sClient.Update(ctx, deploy))
+
 	// Set parent as ready (gen == obsGen) - drift scenario
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
 	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-
-	// Re-fetch to get managedFields
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
-
-	var controllerManager string
-	for _, mf := range deploy.ManagedFields {
-		if mf.Subresource == "status" {
-			controllerManager = mf.Manager
-			break
-		}
-	}
 
 	// Create handler with enforce mode for SPECIFIC NAMESPACES
 	handler := kadmission.NewHandler(kadmission.Config{
@@ -554,7 +517,8 @@ func TestEnforceMode_NamespaceList(t *testing.T) {
 
 	oldBytes, _ := json.Marshal(oldRS)
 	newBytes, _ := json.Marshal(newRS)
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -601,17 +565,6 @@ func TestEnforceMode_NamespaceList_NotInList(t *testing.T) {
 	deploy.Status.ObservedGeneration = deploy.Generation
 	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
 
-	// Re-fetch to get managedFields
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
-
-	var controllerManager string
-	for _, mf := range deploy.ManagedFields {
-		if mf.Subresource == "status" {
-			controllerManager = mf.Manager
-			break
-		}
-	}
-
 	// Create handler with enforce mode for DIFFERENT namespace
 	handler := kadmission.NewHandler(kadmission.Config{
 		Client: k8sClient,
@@ -643,7 +596,8 @@ func TestEnforceMode_NamespaceList_NotInList(t *testing.T) {
 
 	oldBytes, _ := json.Marshal(oldRS)
 	newBytes, _ := json.Marshal(newRS)
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -692,21 +646,20 @@ func TestEnforceMode_NamespaceSelector(t *testing.T) {
 	// Create child ReplicaSet
 	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-selector-rs", nsName, deploy)
 
+	// Mark parent as initialized
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	deploy.SetAnnotations(annotations)
+	require.NoError(t, k8sClient.Update(ctx, deploy))
+
 	// Set parent as ready (gen == obsGen) - drift scenario
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
 	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-
-	// Re-fetch to get managedFields
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
-
-	var controllerManager string
-	for _, mf := range deploy.ManagedFields {
-		if mf.Subresource == "status" {
-			controllerManager = mf.Manager
-			break
-		}
-	}
 
 	// Create handler with namespace selector
 	handler := kadmission.NewHandler(kadmission.Config{
@@ -741,7 +694,8 @@ func TestEnforceMode_NamespaceSelector(t *testing.T) {
 
 	oldBytes, _ := json.Marshal(oldRS)
 	newBytes, _ := json.Marshal(newRS)
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -786,21 +740,20 @@ func TestEnforceMode_NamespaceSelector_NoMatch(t *testing.T) {
 	// Create child ReplicaSet
 	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-selector-nomatch-rs", nsName, deploy)
 
+	// Mark parent as initialized
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	deploy.SetAnnotations(annotations)
+	require.NoError(t, k8sClient.Update(ctx, deploy))
+
 	// Set parent as ready (gen == obsGen) - drift scenario
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
 	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-
-	// Re-fetch to get managedFields
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
-
-	var controllerManager string
-	for _, mf := range deploy.ManagedFields {
-		if mf.Subresource == "status" {
-			controllerManager = mf.Manager
-			break
-		}
-	}
 
 	// Create handler with namespace selector
 	handler := kadmission.NewHandler(kadmission.Config{
@@ -835,7 +788,8 @@ func TestEnforceMode_NamespaceSelector_NoMatch(t *testing.T) {
 
 	oldBytes, _ := json.Marshal(oldRS)
 	newBytes, _ := json.Marshal(newRS)
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -872,21 +826,20 @@ func TestEnforceMode_ObjectSelector(t *testing.T) {
 	// Create child ReplicaSet with labels
 	rs := createReplicaSetWithOwnerAndLabels(t, ctx, "obj-selector-rs", deploy, map[string]string{"protected": "true"})
 
+	// Mark parent as initialized
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	deploy.SetAnnotations(annotations)
+	require.NoError(t, k8sClient.Update(ctx, deploy))
+
 	// Set parent as ready (gen == obsGen) - drift scenario
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
 	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-
-	// Re-fetch to get managedFields
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
-
-	var controllerManager string
-	for _, mf := range deploy.ManagedFields {
-		if mf.Subresource == "status" {
-			controllerManager = mf.Manager
-			break
-		}
-	}
 
 	// Create handler with object selector
 	handler := kadmission.NewHandler(kadmission.Config{
@@ -921,7 +874,8 @@ func TestEnforceMode_ObjectSelector(t *testing.T) {
 
 	oldBytes, _ := json.Marshal(oldRS)
 	newBytes, _ := json.Marshal(newRS)
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -954,21 +908,20 @@ func TestEnforceMode_ObjectSelector_NoMatch(t *testing.T) {
 	// Create child ReplicaSet WITHOUT protected label
 	rs := createReplicaSetWithOwnerAndLabels(t, ctx, "obj-selector-nomatch-rs", deploy, map[string]string{"tier": "frontend"})
 
+	// Mark parent as initialized
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	deploy.SetAnnotations(annotations)
+	require.NoError(t, k8sClient.Update(ctx, deploy))
+
 	// Set parent as ready (gen == obsGen) - drift scenario
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
 	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-
-	// Re-fetch to get managedFields
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
-
-	var controllerManager string
-	for _, mf := range deploy.ManagedFields {
-		if mf.Subresource == "status" {
-			controllerManager = mf.Manager
-			break
-		}
-	}
 
 	// Create handler with object selector
 	handler := kadmission.NewHandler(kadmission.Config{
@@ -1003,7 +956,8 @@ func TestEnforceMode_ObjectSelector_NoMatch(t *testing.T) {
 
 	oldBytes, _ := json.Marshal(oldRS)
 	newBytes, _ := json.Marshal(newRS)
-	optionsJSON := fmt.Sprintf(`{"fieldManager":%q}`, controllerManager)
+	// Use the controller user as field manager
+	optionsJSON := `{"fieldManager":"controller"}`
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{

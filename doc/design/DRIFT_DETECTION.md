@@ -44,8 +44,10 @@ A key challenge is identifying whether a mutation comes from the controller (exp
 - Child: `kausality.io/updaters` — 5-char base36 hashes of users who update spec (max 5)
 
 **Recording:**
-- Child CREATE/UPDATE (spec): user hash added to child's `updaters` annotation (sync, via patch)
+- Child CREATE/UPDATE (spec change only): user hash added to child's `updaters` annotation (sync, via patch)
 - Parent status UPDATE: user hash added to parent's `controllers` annotation (sync + async backup)
+
+**Important:** Metadata-only changes (labels, annotations) do NOT record updaters. Only actual spec changes add the user to the updaters list. This ensures that users who only modify metadata are not incorrectly identified as controllers.
 
 **Detection algorithm:**
 
@@ -120,20 +122,59 @@ Kubernetes controllers (e.g., deployment-controller) copy annotations from paren
 
 ## Lifecycle Phases
 
-### Initialization
+### Phase Annotation
 
-During initialization, all child changes are allowed (including CREATE). Detection priority (default, configurable per GVK):
+The `kausality.io/phase` annotation tracks the lifecycle phase of parent resources:
 
-1. `Initialized=True` condition exists
-2. `Ready=True` condition exists (with persistence — see below)
-3. `status.observedGeneration` exists
-
-Once initialized, admission stores:
 ```yaml
-kausality.io/initialized: "true"
+kausality.io/phase: "initializing" | "initialized"
 ```
 
-This persists the initialized state for resources with flapping conditions (e.g., Crossplane Ready).
+**Phase values:**
+- `initializing` — Resource not yet ready (no Ready/Synced=True, no observedGeneration match)
+- `initialized` — Resource reached steady state (persisted "high water mark")
+- `deleting` — Not stored; derived from `deletionTimestamp` in metadata
+
+**Key behavior:** Once `phase=initialized` is written, it is NOT downgraded to `initializing` even if conditions flip. The annotation persists the "high water mark" to handle flapping conditions (e.g., Crossplane Ready).
+
+```
+Transition rules:
+- initializing → initialized: Store "initialized"
+- initialized → initializing: NO CHANGE (keep "initialized")
+- any → deleting: Don't store (derived from deletionTimestamp)
+```
+
+### Phase Recording
+
+Phase is recorded asynchronously via three triggers:
+
+| Trigger | When | Method | Rationale |
+|---------|------|--------|-----------|
+| Parent status UPDATE | Status subresource update | Async | Conditions may have changed |
+| Child CREATE/UPDATE | Processing child request | Async (lazy) | Already computed phase for drift detection |
+
+**Lazy fetch for child requests:** When processing child requests, the parent's phase is already computed for drift detection. The system only fetches the parent to record phase if:
+1. The computed phase is `initialized`, AND
+2. The parent doesn't already have `phase=initialized`
+
+This avoids API calls on steady-state child updates while ensuring phase is eventually recorded.
+
+### Initialization Detection
+
+Detection priority for determining if a resource is initialized (default, configurable per GVK):
+
+1. `kausality.io/phase: "initialized"` annotation exists
+2. `Initialized=True` condition exists
+3. `Ready=True` condition exists
+4. `status.observedGeneration` matches `generation` AND `Ready=True`
+
+The fourth check specifically requires `Ready=True` (not just `Synced=True`) because:
+- Crossplane sets `Synced=True` when it sends requests to create children
+- But `Ready=False` until children are actually created and ready
+- During child creation, the composition controller needs to update children
+- Those updates should be allowed until `Ready=True` (full hierarchy is ready)
+
+During initialization, all child changes are allowed (including CREATE).
 
 ### Deletion
 

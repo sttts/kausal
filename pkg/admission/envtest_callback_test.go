@@ -28,6 +28,7 @@ import (
 	"github.com/kausality-io/kausality/pkg/callback"
 	"github.com/kausality-io/kausality/pkg/callback/v1alpha1"
 	"github.com/kausality-io/kausality/pkg/config"
+	"github.com/kausality-io/kausality/pkg/drift"
 )
 
 func TestCallback_DriftReportSentOnDetection(t *testing.T) {
@@ -72,14 +73,8 @@ func TestCallback_DriftReportSentOnDetection(t *testing.T) {
 	// Create child ReplicaSet
 	rs := createReplicaSetWithOwner(t, ctx, "callback-rs", deploy)
 
-	// Set parent as ready (drift scenario: gen == obsGen) - NO approvals
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
-		t.Fatalf("failed to get deployment: %v", err)
-	}
-	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
-		t.Fatalf("failed to update status: %v", err)
-	}
+	// Mark parent as stable (initialized with matching observedGeneration) - NO approvals
+	markParentStable(t, ctx, deploy)
 
 	// Re-fetch to get managedFields
 	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
@@ -246,6 +241,7 @@ func TestCallback_ResolvedSentOnApproval(t *testing.T) {
 		annotations = make(map[string]string)
 	}
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)

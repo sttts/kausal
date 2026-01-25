@@ -37,12 +37,8 @@ func TestControllerIdentification_SingleUpdater(t *testing.T) {
 	// Create parent deployment
 	deploy := createDeployment(t, ctx, "ctrl-single-deploy")
 
-	// Set up parent as stable (gen == obsGen)
-	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-
-	// Re-fetch to get latest state
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	// Mark parent as stable (initialized with matching observedGeneration)
+	markParentStable(t, ctx, deploy)
 
 	// Create child ReplicaSet with a single updater hash
 	rs := createReplicaSetWithOwner(t, ctx, "ctrl-single-rs", deploy)
@@ -104,6 +100,7 @@ func TestControllerIdentification_MultipleUpdatersIntersection(t *testing.T) {
 			annotations = make(map[string]string)
 		}
 		annotations[controller.ControllersAnnotation] = controllerHash
+		annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
 		deploy.SetAnnotations(annotations)
 		return k8sClient.Update(ctx, deploy)
 	})
@@ -174,6 +171,16 @@ func TestControllerIdentification_CantDetermine(t *testing.T) {
 	// Create parent deployment WITHOUT controllers annotation
 	deploy := createDeployment(t, ctx, "ctrl-unknown-deploy")
 
+	// Mark as initialized (but NO controllers annotation)
+	annotations := deploy.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	deploy.SetAnnotations(annotations)
+	require.NoError(t, k8sClient.Update(ctx, deploy))
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+
 	// Set up parent as stable
 	deploy.Status.ObservedGeneration = deploy.Generation
 	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
@@ -229,10 +236,8 @@ func TestControllerIdentification_CreateFirstUpdater(t *testing.T) {
 	// Create parent deployment
 	deploy := createDeployment(t, ctx, "ctrl-create-deploy")
 
-	// Set up parent as stable
-	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	// Mark parent as stable (initialized with matching observedGeneration)
+	markParentStable(t, ctx, deploy)
 
 	// Create child WITHOUT any updaters annotation (simulating CREATE)
 	rs := createReplicaSetWithOwner(t, ctx, "ctrl-create-rs", deploy)
@@ -318,11 +323,7 @@ func TestRecordControllerAsync_AddsHashAfterDelay(t *testing.T) {
 	user := "system:serviceaccount:test:controller"
 	tracker.RecordControllerAsync(ctx, deploy, user)
 
-	// Hash should NOT be there immediately
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
-	assert.Empty(t, deploy.Annotations[controller.ControllersAnnotation], "hash should not be immediate")
-
-	// Wait for async update using polling
+	// Wait for async update (may be immediate with delay=0)
 	t.Log("Waiting for async annotation update...")
 	expectedHash := controller.HashUsername(user)
 
@@ -352,7 +353,7 @@ func TestControllerIdentification_FullFlow(t *testing.T) {
 	t.Log("Step 1: Creating parent deployment")
 	deploy := createDeployment(t, ctx, "full-flow-deploy")
 
-	// Step 2: Add controller annotation (simulating async recording)
+	// Step 2: Add controller annotation and phase annotation (simulating async recording)
 	t.Log("Step 2: Adding controller annotation to parent")
 	controllerHash := controller.HashUsername(controllerUser)
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
@@ -364,6 +365,7 @@ func TestControllerIdentification_FullFlow(t *testing.T) {
 			annotations = make(map[string]string)
 		}
 		annotations[controller.ControllersAnnotation] = controllerHash
+		annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
 		deploy.SetAnnotations(annotations)
 		return k8sClient.Update(ctx, deploy)
 	})

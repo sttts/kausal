@@ -60,6 +60,9 @@ type ParentState struct {
 	Conditions []metav1.Condition
 	// IsInitialized indicates whether the parent has completed initialization.
 	IsInitialized bool
+	// PhaseFromAnnotation is the value of kausality.io/phase annotation.
+	// Used to determine if phase needs to be recorded (lazy fetch optimization).
+	PhaseFromAnnotation string
 }
 
 // LifecyclePhase represents the lifecycle phase of a parent object.
@@ -74,10 +77,21 @@ const (
 	PhaseDeleting LifecyclePhase = "Deleting"
 )
 
+// PhaseAnnotation stores the lifecycle phase of a parent resource.
+const PhaseAnnotation = "kausality.io/phase"
+
+// Phase values for the PhaseAnnotation.
+const (
+	PhaseValueInitializing = "initializing"
+	PhaseValueInitialized  = "initialized"
+	// PhaseDeleting is not stored - derived from deletionTimestamp
+)
+
 // Condition types used for initialization and observedGeneration detection.
 const (
 	ConditionTypeInitialized = "Initialized"
 	ConditionTypeReady       = "Ready"
+	ConditionTypeAvailable   = "Available"
 	ConditionTypeSynced      = "Synced"
 )
 
