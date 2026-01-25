@@ -262,11 +262,11 @@ func TestParseHashes(t *testing.T) {
 func TestContainsHash(t *testing.T) {
 	hashes := []string{"abc12", "def34", "ghi56"}
 
-	assert.True(t, containsHash(hashes, "abc12"))
-	assert.True(t, containsHash(hashes, "def34"))
-	assert.True(t, containsHash(hashes, "ghi56"))
-	assert.False(t, containsHash(hashes, "xyz99"))
-	assert.False(t, containsHash(nil, "abc12"))
+	assert.True(t, ContainsHash(hashes, "abc12"))
+	assert.True(t, ContainsHash(hashes, "def34"))
+	assert.True(t, ContainsHash(hashes, "ghi56"))
+	assert.False(t, ContainsHash(hashes, "xyz99"))
+	assert.False(t, ContainsHash(nil, "abc12"))
 }
 
 func TestIntersect(t *testing.T) {
@@ -304,7 +304,7 @@ func TestIntersect(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := intersect(tt.a, tt.b)
+			got := Intersect(tt.a, tt.b)
 			assert.Equal(t, tt.want, got)
 		})
 	}

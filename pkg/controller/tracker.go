@@ -86,7 +86,7 @@ func RecordUpdater(obj client.Object, username string) map[string]string {
 	hashes := ParseHashes(existing)
 
 	// Add new hash if not already present
-	if !containsHash(hashes, hash) {
+	if !ContainsHash(hashes, hash) {
 		hashes = append(hashes, hash)
 		// Limit to MaxHashes (keep most recent)
 		if len(hashes) > MaxHashes {
@@ -108,7 +108,7 @@ func (t *Tracker) RecordControllerAsync(ctx context.Context, obj client.Object, 
 	annotations := obj.GetAnnotations()
 	if annotations != nil {
 		existing := annotations[ControllersAnnotation]
-		if containsHash(ParseHashes(existing), hash) {
+		if ContainsHash(ParseHashes(existing), hash) {
 			return // Already recorded
 		}
 	}
@@ -158,7 +158,7 @@ func (t *Tracker) flushAfterDelay(ctx context.Context, obj client.Object, delay 
 		hashes := ParseHashes(annotations[ControllersAnnotation])
 
 		// Check if already present
-		if containsHash(hashes, hash) {
+		if ContainsHash(hashes, hash) {
 			return nil
 		}
 
@@ -213,9 +213,9 @@ func IdentifyController(child, parent client.Object, username string) (isControl
 
 	// Case 2: Multiple updaters + parent has controllers - use intersection
 	if len(childUpdaters) > 1 && len(parentControllers) > 0 {
-		intersection := intersect(childUpdaters, parentControllers)
+		intersection := Intersect(childUpdaters, parentControllers)
 		if len(intersection) > 0 {
-			return containsHash(intersection, userHash), true
+			return ContainsHash(intersection, userHash), true
 		}
 	}
 
@@ -239,8 +239,8 @@ func ParseHashes(s string) []string {
 	return result
 }
 
-// containsHash checks if a hash is in the list.
-func containsHash(hashes []string, hash string) bool {
+// ContainsHash checks if a hash is in the list.
+func ContainsHash(hashes []string, hash string) bool {
 	for _, h := range hashes {
 		if h == hash {
 			return true
@@ -249,8 +249,8 @@ func containsHash(hashes []string, hash string) bool {
 	return false
 }
 
-// intersect returns hashes present in both lists.
-func intersect(a, b []string) []string {
+// Intersect returns hashes present in both lists.
+func Intersect(a, b []string) []string {
 	set := make(map[string]struct{})
 	for _, h := range a {
 		set[h] = struct{}{}

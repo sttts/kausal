@@ -225,9 +225,9 @@ func (d *Detector) isControllerByHash(parentState *ParentState, username string,
 
 	// Case 2: Multiple updaters + parent has controllers - use intersection
 	if len(childUpdaters) > 1 && len(parentState.Controllers) > 0 {
-		intersection := intersectHashes(childUpdaters, parentState.Controllers)
+		intersection := controller.Intersect(childUpdaters, parentState.Controllers)
 		if len(intersection) > 0 {
-			return containsHash(intersection, userHash), true
+			return controller.ContainsHash(intersection, userHash), true
 		}
 	}
 
@@ -239,31 +239,6 @@ func (d *Detector) isControllerByHash(parentState *ParentState, username string,
 
 	// Case 4: Can't determine (multiple updaters, no parent controllers)
 	return false, false
-}
-
-// intersectHashes returns hashes present in both lists.
-func intersectHashes(a, b []string) []string {
-	set := make(map[string]struct{})
-	for _, h := range a {
-		set[h] = struct{}{}
-	}
-	var result []string
-	for _, h := range b {
-		if _, ok := set[h]; ok {
-			result = append(result, h)
-		}
-	}
-	return result
-}
-
-// containsHash checks if a hash is in the list.
-func containsHash(hashes []string, hash string) bool {
-	for _, h := range hashes {
-		if h == hash {
-			return true
-		}
-	}
-	return false
 }
 
 // parseUpdaterHashes extracts updater hashes from the child object's annotation.
