@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -845,6 +846,119 @@ func TestGetModeForResourceContext(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mode := cfg.GetModeForResourceContext(tt.ctx)
 			assert.Equal(t, tt.wantMode, mode)
+		})
+	}
+}
+
+func TestLoad_WithBackends(t *testing.T) {
+	tempDir := t.TempDir()
+
+	tests := []struct {
+		name         string
+		content      string
+		wantErr      bool
+		wantBackends int
+		checkBackend func(t *testing.T, cfg *Config)
+	}{
+		{
+			name: "single backend",
+			content: `
+driftDetection:
+  defaultMode: log
+backends:
+  - url: https://backend1.example.com/webhook
+    timeout: 10s
+    retryCount: 3
+    retryInterval: 1s
+`,
+			wantBackends: 1,
+			checkBackend: func(t *testing.T, cfg *Config) {
+				b := cfg.Backends[0]
+				assert.Equal(t, "https://backend1.example.com/webhook", b.URL)
+				assert.Equal(t, 10*time.Second, b.Timeout)
+				assert.Equal(t, 3, b.RetryCount)
+				assert.Equal(t, 1*time.Second, b.RetryInterval)
+			},
+		},
+		{
+			name: "multiple backends",
+			content: `
+driftDetection:
+  defaultMode: log
+backends:
+  - url: https://backend1.example.com/webhook
+    timeout: 10s
+  - url: https://backend2.example.com/webhook
+    caFile: /path/to/ca.crt
+    timeout: 5s
+  - url: https://backend3.example.com/webhook
+`,
+			wantBackends: 3,
+			checkBackend: func(t *testing.T, cfg *Config) {
+				assert.Equal(t, "https://backend1.example.com/webhook", cfg.Backends[0].URL)
+				assert.Equal(t, "https://backend2.example.com/webhook", cfg.Backends[1].URL)
+				assert.Equal(t, "/path/to/ca.crt", cfg.Backends[1].CAFile)
+				assert.Equal(t, "https://backend3.example.com/webhook", cfg.Backends[2].URL)
+			},
+		},
+		{
+			name: "no backends",
+			content: `
+driftDetection:
+  defaultMode: log
+`,
+			wantBackends: 0,
+		},
+		{
+			name: "empty backends array",
+			content: `
+driftDetection:
+  defaultMode: log
+backends: []
+`,
+			wantBackends: 0,
+		},
+		{
+			name: "backend with all options",
+			content: `
+driftDetection:
+  defaultMode: log
+backends:
+  - url: https://secure.example.com/webhook
+    caFile: /etc/ssl/ca.crt
+    timeout: 30s
+    retryCount: 5
+    retryInterval: 2s
+`,
+			wantBackends: 1,
+			checkBackend: func(t *testing.T, cfg *Config) {
+				b := cfg.Backends[0]
+				assert.Equal(t, "https://secure.example.com/webhook", b.URL)
+				assert.Equal(t, "/etc/ssl/ca.crt", b.CAFile)
+				assert.Equal(t, 30*time.Second, b.Timeout)
+				assert.Equal(t, 5, b.RetryCount)
+				assert.Equal(t, 2*time.Second, b.RetryInterval)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(tempDir, tt.name+".yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0644))
+
+			cfg, err := Load(path)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Len(t, cfg.Backends, tt.wantBackends)
+
+			if tt.checkBackend != nil {
+				tt.checkBackend(t, cfg)
+			}
 		})
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -16,6 +17,24 @@ import (
 // Config is the root configuration structure.
 type Config struct {
 	DriftDetection DriftDetectionConfig `yaml:"driftDetection"`
+	// Backends configures drift report webhook endpoints.
+	// Reports are sent to all configured backends in parallel.
+	Backends []BackendConfig `yaml:"backends,omitempty"`
+}
+
+// BackendConfig configures a drift report webhook endpoint.
+type BackendConfig struct {
+	// URL is the webhook endpoint URL.
+	URL string `yaml:"url"`
+	// CAFile is the path to the CA certificate file for TLS verification.
+	// If empty, system CA pool is used.
+	CAFile string `yaml:"caFile,omitempty"`
+	// Timeout is the request timeout. Default is 10 seconds.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+	// RetryCount is the number of retries on failure. Default is 3.
+	RetryCount int `yaml:"retryCount,omitempty"`
+	// RetryInterval is the interval between retries. Default is 1 second.
+	RetryInterval time.Duration `yaml:"retryInterval,omitempty"`
 }
 
 // DriftDetectionConfig configures drift detection behavior.

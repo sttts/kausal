@@ -39,19 +39,6 @@ spec:
             {{- if .Values.logging.development }}
             - --zap-devel=true
             {{- end }}
-            {{- if .Values.driftCallback.enabled }}
-            {{- if .Values.backend.enabled }}
-            - --drift-webhook-url={{ include "kausality.backendServiceURL" . }}
-            {{- else if .Values.driftCallback.url }}
-            - --drift-webhook-url={{ .Values.driftCallback.url }}
-            {{- end }}
-            {{- if or .Values.driftCallback.ca.cert .Values.driftCallback.ca.existingSecret }}
-            - --drift-webhook-ca=/etc/callback-ca/ca.crt
-            {{- end }}
-            - --drift-webhook-timeout={{ .Values.driftCallback.timeout }}
-            - --drift-webhook-retry-count={{ .Values.driftCallback.retryCount }}
-            - --drift-webhook-retry-interval={{ .Values.driftCallback.retryInterval }}
-            {{- end }}
           ports:
             - name: webhook
               containerPort: {{ .Values.webhook.port }}
@@ -80,10 +67,12 @@ spec:
             - name: config
               mountPath: /etc/kausality
               readOnly: true
-            {{- if and .Values.driftCallback.enabled (or .Values.driftCallback.ca.cert .Values.driftCallback.ca.existingSecret) }}
-            - name: callback-ca
-              mountPath: /etc/callback-ca
+            {{- range $i, $cb := .Values.driftCallbacks }}
+            {{- if or $cb.ca.cert $cb.ca.existingSecret }}
+            - name: callback-ca-{{ $cb.url | sha256sum | trunc 8 }}
+              mountPath: /etc/callback-ca/{{ $cb.url | sha256sum | trunc 8 }}
               readOnly: true
+            {{- end }}
             {{- end }}
       volumes:
         - name: cert
@@ -92,17 +81,19 @@ spec:
         - name: config
           configMap:
             name: {{ include "kausality.fullname" . }}-config
-        {{- if and .Values.driftCallback.enabled .Values.driftCallback.ca.cert }}
-        - name: callback-ca
+        {{- range $i, $cb := .Values.driftCallbacks }}
+        {{- if $cb.ca.cert }}
+        - name: callback-ca-{{ $cb.url | sha256sum | trunc 8 }}
           secret:
-            secretName: {{ include "kausality.fullname" . }}-callback-ca
-        {{- else if and .Values.driftCallback.enabled .Values.driftCallback.ca.existingSecret }}
-        - name: callback-ca
+            secretName: {{ include "kausality.fullname" $ }}-callback-ca-{{ $i }}
+        {{- else if $cb.ca.existingSecret }}
+        - name: callback-ca-{{ $cb.url | sha256sum | trunc 8 }}
           secret:
-            secretName: {{ .Values.driftCallback.ca.existingSecret }}
+            secretName: {{ $cb.ca.existingSecret }}
             items:
-              - key: {{ .Values.driftCallback.ca.key | default "ca.crt" }}
+              - key: {{ $cb.ca.key | default "ca.crt" }}
                 path: ca.crt
+        {{- end }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -22,20 +22,22 @@ import (
 	"github.com/kausality-io/kausality/pkg/callback"
 	"github.com/kausality-io/kausality/pkg/callback/v1alpha1"
 	"github.com/kausality-io/kausality/pkg/config"
+	"github.com/kausality-io/kausality/pkg/controller"
 	"github.com/kausality-io/kausality/pkg/drift"
 	"github.com/kausality-io/kausality/pkg/trace"
 )
 
 // Handler handles admission requests for drift detection and tracing.
 type Handler struct {
-	client          client.Client
-	decoder         admission.Decoder
-	detector        *drift.Detector
-	propagator      *trace.Propagator
-	approvalChecker *approval.Checker
-	callbackSender  *callback.Sender
-	config          *config.Config
-	log             logr.Logger
+	client            client.Client
+	decoder           admission.Decoder
+	detector          *drift.Detector
+	propagator        *trace.Propagator
+	approvalChecker   *approval.Checker
+	callbackSender    callback.ReportSender
+	controllerTracker *controller.Tracker
+	config            *config.Config
+	log               logr.Logger
 }
 
 // Config configures the admission handler.
@@ -47,7 +49,7 @@ type Config struct {
 	DriftConfig *config.Config
 	// CallbackSender sends drift reports to webhook endpoints.
 	// If nil, drift callbacks are disabled.
-	CallbackSender *callback.Sender
+	CallbackSender callback.ReportSender
 }
 
 // NewHandler creates a new admission Handler.
@@ -56,14 +58,16 @@ func NewHandler(cfg Config) *Handler {
 	if driftConfig == nil {
 		driftConfig = config.Default()
 	}
+	log := cfg.Log.WithName("kausality-admission")
 	return &Handler{
-		client:          cfg.Client,
-		detector:        drift.NewDetector(cfg.Client),
-		propagator:      trace.NewPropagator(cfg.Client),
-		approvalChecker: approval.NewChecker(),
-		callbackSender:  cfg.CallbackSender,
-		config:          driftConfig,
-		log:             cfg.Log.WithName("kausality-admission"),
+		client:            cfg.Client,
+		detector:          drift.NewDetector(cfg.Client),
+		propagator:        trace.NewPropagator(cfg.Client),
+		approvalChecker:   approval.NewChecker(),
+		callbackSender:    cfg.CallbackSender,
+		controllerTracker: controller.NewTracker(cfg.Client, log),
+		config:            driftConfig,
+		log:               log,
 	}
 }
 
@@ -75,11 +79,17 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		"namespace", req.Namespace,
 		"name", req.Name,
 		"user", req.UserInfo.Username,
+		"subresource", req.SubResource,
 	)
 
 	// Handle CREATE, UPDATE, and DELETE (DELETE just sets deletionTimestamp)
 	if req.Operation != admissionv1.Create && req.Operation != admissionv1.Update && req.Operation != admissionv1.Delete {
 		return admission.Allowed("operation not relevant for tracing")
+	}
+
+	// Handle status subresource updates - record controller identity
+	if req.SubResource == "status" {
+		return h.handleStatusUpdate(ctx, req, log)
 	}
 
 	// For UPDATE, check if spec changed - ignore status/metadata-only changes
@@ -103,12 +113,24 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		return admission.Errored(http.StatusBadRequest, fmt.Errorf("failed to parse object: %w", err))
 	}
 
-	// Extract fieldManager for controller identification
-	fieldManager := extractFieldManager(req)
-	log = log.WithValues("fieldManager", fieldManager)
+	// Get existing updaters from OldObject (for UPDATE) or empty (for CREATE)
+	var childUpdaters []string
+	if req.Operation == admissionv1.Update && len(req.OldObject.Raw) > 0 {
+		oldObj := &unstructured.Unstructured{}
+		if err := runtime.DecodeInto(unstructured.UnstructuredJSONScheme, req.OldObject.Raw, oldObj); err == nil {
+			childUpdaters = drift.ParseUpdaterHashes(oldObj)
+		}
+	}
 
-	// Detect drift
-	driftResult, err := h.detector.DetectWithFieldManager(ctx, obj, fieldManager)
+	// Extract fieldManager for trace propagation (still needed for legacy compat)
+	fieldManager := extractFieldManager(req)
+
+	// Add user hash for logging
+	userHash := controller.HashUsername(req.UserInfo.Username)
+	log = log.WithValues("userHash", userHash, "fieldManager", fieldManager)
+
+	// Detect drift using user hash tracking
+	driftResult, err := h.detector.DetectWithUsername(ctx, obj, req.UserInfo.Username, childUpdaters)
 	if err != nil {
 		log.Error(err, "drift detection failed")
 		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("drift detection failed: %w", err))
@@ -230,8 +252,8 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		return withWarnings(admission.Allowed(driftResult.Reason), warnings)
 	}
 
-	// Create patch to add/update trace annotation
-	patch, err := createTracePatch(obj, traceResult.Trace)
+	// Create patch to add/update trace annotation and updaters annotation
+	patch, err := createTracePatchWithUpdaters(obj, traceResult.Trace, req.UserInfo.Username)
 	if err != nil {
 		log.Error(err, "failed to create trace patch")
 		return withWarnings(admission.Allowed(driftResult.Reason), warnings)
@@ -239,6 +261,29 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 
 	resp := admission.PatchResponseFromRaw(req.Object.Raw, patch)
 	return withWarnings(resp, warnings)
+}
+
+// handleStatusUpdate handles status subresource updates to record controller identity.
+func (h *Handler) handleStatusUpdate(ctx context.Context, req admission.Request, log logr.Logger) admission.Response {
+	if req.Operation != admissionv1.Update {
+		return admission.Allowed("status subresource: only UPDATE is relevant")
+	}
+
+	// Parse the object
+	obj, err := h.parseObject(req)
+	if err != nil {
+		log.Error(err, "failed to parse object from status update request")
+		return admission.Allowed("failed to parse object")
+	}
+
+	// Record the controller asynchronously
+	// This adds the user hash to the object's kausality.io/controllers annotation
+	h.controllerTracker.RecordControllerAsync(ctx, obj, req.UserInfo.Username)
+
+	userHash := controller.HashUsername(req.UserInfo.Username)
+	log.V(1).Info("recorded status updater", "userHash", userHash)
+
+	return admission.Allowed("status update recorded")
 }
 
 // withWarnings adds warnings to an admission response.
@@ -249,13 +294,10 @@ func withWarnings(resp admission.Response, warnings []string) admission.Response
 	return resp
 }
 
-// createTracePatch creates a JSON patch to set the trace annotation.
-func createTracePatch(obj client.Object, t trace.Trace) ([]byte, error) {
-	// Get existing annotations
-	annotations := obj.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
+// createTracePatchWithUpdaters creates a JSON patch to set trace and updaters annotations.
+func createTracePatchWithUpdaters(obj client.Object, t trace.Trace, username string) ([]byte, error) {
+	// Get existing annotations and add updater hash
+	annotations := controller.RecordUpdater(obj, username)
 
 	// Set trace annotation
 	annotations[trace.TraceAnnotation] = t.String()

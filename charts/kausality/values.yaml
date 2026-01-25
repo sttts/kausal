@@ -136,29 +136,24 @@ logging:
   # Development mode (more verbose)
   development: false
 
-# Drift callback configuration
-# When enabled, drift reports are sent to a webhook endpoint
-driftCallback:
-  # Enable drift callback
-  enabled: false
-  # URL of the webhook endpoint (required if enabled)
-  # Use backend.enabled to deploy the built-in backend
-  url: ""
-  # CA certificate for TLS verification (optional)
-  # Can be provided inline or via existing secret
-  ca:
-    # Inline CA certificate (PEM format)
-    cert: ""
-    # Or use existing secret
-    existingSecret: ""
-    # Key in the secret to use (default: ca.crt)
-    # Use "tls.crt" for cert-manager secrets
-    key: "ca.crt"
-  # Request timeout
-  timeout: 10s
-  # Retry configuration
-  retryCount: 3
-  retryInterval: 1s
+# Drift callbacks configuration
+# Multiple backends can be configured; reports are sent to all in parallel
+driftCallbacks: []
+  # Example configuration:
+  # - url: https://backend1.example.com/webhook
+  #   ca:
+  #     # Inline CA certificate (PEM format)
+  #     cert: ""
+  #     # Or use existing secret
+  #     existingSecret: ""
+  #     # Key in the secret to use (default: ca.crt)
+  #     # Use "tls.crt" for cert-manager secrets
+  #     key: "ca.crt"
+  #   timeout: 10s
+  #   retryCount: 3
+  #   retryInterval: 1s
+  # - url: https://backend2.example.com/webhook
+  #   timeout: 5s
 
 # Backend deployment for receiving drift reports
 # Deploys kausality-backend-log which logs DriftReports as YAML

@@ -19,6 +19,14 @@ import (
 	"github.com/kausality-io/kausality/pkg/callback/v1alpha1"
 )
 
+// ReportSender sends drift reports to backend endpoints.
+type ReportSender interface {
+	SendAsync(ctx context.Context, report *v1alpha1.DriftReport)
+	IsEnabled() bool
+	MarkResolved(id string)
+	StartCleanup(interval time.Duration) func()
+}
+
 // SenderConfig configures the Sender.
 type SenderConfig struct {
 	// URL is the webhook endpoint URL.

@@ -12,3 +12,27 @@ data:
       overrides:
         {{- toYaml .Values.driftDetection.overrides | nindent 8 }}
       {{- end }}
+    {{- if or .Values.backend.enabled .Values.driftCallbacks }}
+    backends:
+      {{- if .Values.backend.enabled }}
+      - url: {{ include "kausality.backendServiceURL" . }}
+        timeout: 10s
+        retryCount: 3
+        retryInterval: 1s
+      {{- end }}
+      {{- range .Values.driftCallbacks }}
+      - url: {{ .url | quote }}
+        {{- if or .ca.cert .ca.existingSecret }}
+        caFile: /etc/callback-ca/{{ .url | sha256sum | trunc 8 }}/ca.crt
+        {{- end }}
+        {{- if .timeout }}
+        timeout: {{ .timeout }}
+        {{- end }}
+        {{- if .retryCount }}
+        retryCount: {{ .retryCount }}
+        {{- end }}
+        {{- if .retryInterval }}
+        retryInterval: {{ .retryInterval }}
+        {{- end }}
+      {{- end }}
+    {{- end }}

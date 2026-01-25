@@ -42,7 +42,7 @@ type Config struct {
 	DriftConfig *config.Config
 	// CallbackSender sends drift reports to webhook endpoints.
 	// If nil, drift callbacks are disabled.
-	CallbackSender *callback.Sender
+	CallbackSender callback.ReportSender
 }
 
 // Server is a standalone webhook server for drift detection.

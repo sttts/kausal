@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/go-logr/logr"
 
@@ -39,27 +38,13 @@ func main() {
 		certDir                string
 		healthProbeBindAddress string
 		configFile             string
-
-		// Drift callback webhook flags
-		driftWebhookURL           string
-		driftWebhookCA            string
-		driftWebhookTimeout       time.Duration
-		driftWebhookRetryCount    int
-		driftWebhookRetryInterval time.Duration
 	)
 
 	flag.StringVar(&host, "host", "", "The address to bind to (default: all interfaces)")
 	flag.IntVar(&port, "port", 9443, "The port to listen on for webhook requests")
 	flag.StringVar(&certDir, "cert-dir", "/etc/webhook/certs", "The directory containing tls.crt and tls.key")
 	flag.StringVar(&healthProbeBindAddress, "health-probe-bind-address", ":8081", "The address for health probes")
-	flag.StringVar(&configFile, "config", "", "Path to config file (optional)")
-
-	// Drift callback webhook flags
-	flag.StringVar(&driftWebhookURL, "drift-webhook-url", "", "URL for drift notification webhook (optional)")
-	flag.StringVar(&driftWebhookCA, "drift-webhook-ca", "", "Path to CA certificate for drift webhook TLS verification")
-	flag.DurationVar(&driftWebhookTimeout, "drift-webhook-timeout", 10*time.Second, "Timeout for drift webhook requests")
-	flag.IntVar(&driftWebhookRetryCount, "drift-webhook-retry-count", 3, "Number of retries for drift webhook requests")
-	flag.DurationVar(&driftWebhookRetryInterval, "drift-webhook-retry-interval", 1*time.Second, "Interval between drift webhook retries")
+	flag.StringVar(&configFile, "config", "", "Path to config file (required)")
 
 	opts := zap.Options{
 		Development: true,
@@ -76,7 +61,6 @@ func main() {
 		"certDir", certDir,
 		"healthProbeBindAddress", healthProbeBindAddress,
 		"configFile", configFile,
-		"driftWebhookURL", driftWebhookURL,
 	)
 
 	// Create Kubernetes client
@@ -96,40 +80,47 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load drift detection config if provided
-	var driftConfig *config.Config
-	if configFile != "" {
-		driftConfig, err = config.Load(configFile)
-		if err != nil {
-			log.Error(err, "unable to load config file", "path", configFile)
-			os.Exit(1)
-		}
-		log.Info("loaded config",
-			"defaultMode", driftConfig.DriftDetection.DefaultMode,
-			"overrides", len(driftConfig.DriftDetection.Overrides),
-		)
+	// Load config (required)
+	if configFile == "" {
+		log.Error(nil, "config file is required")
+		os.Exit(1)
 	}
+	driftConfig, err := config.Load(configFile)
+	if err != nil {
+		log.Error(err, "unable to load config file", "path", configFile)
+		os.Exit(1)
+	}
+	log.Info("loaded config",
+		"defaultMode", driftConfig.DriftDetection.DefaultMode,
+		"overrides", len(driftConfig.DriftDetection.Overrides),
+		"backends", len(driftConfig.Backends),
+	)
 
-	// Create callback sender if URL is configured
-	var callbackSender *callback.Sender
-	if driftWebhookURL != "" {
-		callbackSender, err = callback.NewSender(callback.SenderConfig{
-			URL:           driftWebhookURL,
-			CAFile:        driftWebhookCA,
-			Timeout:       driftWebhookTimeout,
-			RetryCount:    driftWebhookRetryCount,
-			RetryInterval: driftWebhookRetryInterval,
-			Log:           log,
-		})
+	// Create multi-sender if backends are configured
+	var callbackSender callback.ReportSender
+	if len(driftConfig.Backends) > 0 {
+		// Convert config backends to SenderConfigs
+		senderConfigs := make([]callback.SenderConfig, len(driftConfig.Backends))
+		for i, backend := range driftConfig.Backends {
+			senderConfigs[i] = callback.SenderConfig{
+				URL:           backend.URL,
+				CAFile:        backend.CAFile,
+				Timeout:       backend.Timeout,
+				RetryCount:    backend.RetryCount,
+				RetryInterval: backend.RetryInterval,
+				Log:           log,
+			}
+		}
+
+		multiSender, err := callback.NewMultiSender(senderConfigs, log)
 		if err != nil {
-			log.Error(err, "unable to create drift callback sender")
+			log.Error(err, "unable to create drift callback senders")
 			os.Exit(1)
 		}
-		log.Info("drift callback enabled",
-			"url", driftWebhookURL,
-			"timeout", driftWebhookTimeout,
-			"retryCount", driftWebhookRetryCount,
-		)
+		if multiSender != nil {
+			callbackSender = multiSender
+			log.Info("drift callbacks enabled", "backends", multiSender.Len())
+		}
 	}
 
 	// Create and start webhook server
