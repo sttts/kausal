@@ -568,6 +568,14 @@ func (h *Handler) buildDriftReport(req admission.Request, obj client.Object, dri
 		Name:       driftResult.ParentRef.Name,
 	}
 
+	// Include parent state info if available
+	if driftResult.ParentState != nil {
+		parentRef.Generation = driftResult.ParentState.Generation
+		parentRef.ObservedGeneration = driftResult.ParentState.ObservedGeneration
+		parentRef.ControllerManager = driftResult.ParentState.ControllerManager
+	}
+	parentRef.LifecyclePhase = string(driftResult.LifecyclePhase)
+
 	childRef := v1alpha1.ObjectReference{
 		APIVersion: gvk.GroupVersion().String(),
 		Kind:       gvk.Kind,
@@ -595,37 +603,23 @@ func (h *Handler) buildDriftReport(req admission.Request, obj client.Object, dri
 		UID:          string(req.UID),
 		FieldManager: extractFieldManager(req),
 		Operation:    string(req.Operation),
-	}
-
-	// Build detection context
-	detCtx := v1alpha1.DetectionContext{
-		LifecyclePhase: string(driftResult.LifecyclePhase),
+		DryRun:       req.DryRun != nil && *req.DryRun,
 	}
 
 	report := &v1alpha1.DriftReport{
 		Spec: v1alpha1.DriftReportSpec{
-			ID:        id,
-			Phase:     phase,
-			Parent:    parentRef,
-			Child:     childRef,
-			Request:   reqCtx,
-			Detection: detCtx,
+			ID:      id,
+			Phase:   phase,
+			Parent:  parentRef,
+			Child:   childRef,
+			Request: reqCtx,
 		},
 	}
 
-	// Include old/new objects for UPDATE operations
-	switch req.Operation {
-	case admissionv1.Update:
-		if len(req.OldObject.Raw) > 0 {
-			report.Spec.OldObject = runtime.RawExtension{Raw: req.OldObject.Raw}
-		}
-		if len(req.Object.Raw) > 0 {
-			report.Spec.NewObject = runtime.RawExtension{Raw: req.Object.Raw}
-		}
-	case admissionv1.Create:
-		if len(req.Object.Raw) > 0 {
-			report.Spec.NewObject = runtime.RawExtension{Raw: req.Object.Raw}
-		}
+	// Include objects in report
+	report.Spec.NewObject = runtime.RawExtension{Raw: req.Object.Raw}
+	if req.Operation == admissionv1.Update && len(req.OldObject.Raw) > 0 {
+		report.Spec.OldObject = &runtime.RawExtension{Raw: req.OldObject.Raw}
 	}
 
 	return report

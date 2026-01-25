@@ -187,7 +187,7 @@ func TestDetectFromStateWithFieldManager(t *testing.T) {
 			expectReasonMatch: "expected change",
 		},
 		{
-			name: "empty fieldManager with known controller - different actor",
+			name: "empty fieldManager with known controller - treated as controller",
 			state: &ParentState{
 				Ref:                   ParentRef{Kind: "Deployment", Name: "test"},
 				Generation:            5,
@@ -196,6 +196,19 @@ func TestDetectFromStateWithFieldManager(t *testing.T) {
 				ControllerManager:     "my-controller",
 			},
 			fieldManager:      "",
+			expectDrift:       false,
+			expectReasonMatch: "expected change",
+		},
+		{
+			name: "non-empty fieldManager different from controller - different actor",
+			state: &ParentState{
+				Ref:                   ParentRef{Kind: "Deployment", Name: "test"},
+				Generation:            5,
+				ObservedGeneration:    5, // Parent is stable
+				HasObservedGeneration: true,
+				ControllerManager:     "my-controller",
+			},
+			fieldManager:      "kubectl-edit",
 			expectDrift:       false,
 			expectReasonMatch: "different actor",
 		},

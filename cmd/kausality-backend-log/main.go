@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"sigs.k8s.io/yaml"
 
-	"github.com/kausality-io/kausality/pkg/callback/v1alpha1"
+	kausalityv1alpha1 "github.com/kausality-io/kausality/pkg/callback/v1alpha1"
 )
 
 func main() {
@@ -67,13 +67,13 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var report v1alpha1.DriftReport
+	var report kausalityv1alpha1.DriftReport
 	if err := json.Unmarshal(body, &report); err != nil {
 		http.Error(w, "invalid DriftReport", http.StatusBadRequest)
 		return
 	}
 
-	// Print as YAML
+	// Print as YAML using sigs.k8s.io/yaml which handles RawExtension correctly
 	yamlBytes, err := yaml.Marshal(&report)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "# failed to marshal: %v\n", err)
@@ -83,7 +83,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Acknowledge
-	response := v1alpha1.DriftReportResponse{Acknowledged: true}
+	response := kausalityv1alpha1.DriftReportResponse{Acknowledged: true}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
 }

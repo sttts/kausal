@@ -72,6 +72,7 @@ func (d *Detector) DetectWithFieldManager(ctx context.Context, obj client.Object
 
 	result := &DriftResult{
 		ParentRef:      &parentState.Ref,
+		ParentState:    parentState,
 		LifecyclePhase: phase,
 	}
 
@@ -132,10 +133,20 @@ func (d *Detector) isControllerRequest(parentState *ParentState, fieldManager st
 		return true
 	}
 
-	// We know the controller's fieldManager.
-	// Only an exact match means the request is from the controller.
-	// Empty or different fieldManager = different actor (not drift).
-	return fieldManager == parentState.ControllerManager
+	// If the request has a fieldManager that matches the controller, it's definitely the controller.
+	if fieldManager == parentState.ControllerManager {
+		return true
+	}
+
+	// If the request has a non-empty fieldManager that doesn't match, it's a different actor.
+	// This allows us to distinguish intentional changes by users, HPA, etc.
+	if fieldManager != "" {
+		return false
+	}
+
+	// Empty fieldManager is ambiguous - controllers often don't set it.
+	// Treat as potentially controller and check for drift.
+	return true
 }
 
 // DetectFromState checks for drift given an already-resolved parent state.
@@ -160,6 +171,7 @@ func (d *Detector) DetectFromStateWithFieldManager(parentState *ParentState, fie
 
 	result := &DriftResult{
 		ParentRef:      &parentState.Ref,
+		ParentState:    parentState,
 		LifecyclePhase: phase,
 	}
 

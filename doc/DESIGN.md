@@ -389,8 +389,6 @@ When drift is detected, kausality sends a `DriftReport` to configured webhook en
 ```yaml
 apiVersion: kausality.io/v1alpha1
 kind: DriftReport
-metadata:
-  name: <generated>
 spec:
   id: "a1b2c3d4e5f67890"  # sha256(parent+child+diff)[:16]
   phase: Detected         # or Resolved
@@ -400,24 +398,34 @@ spec:
     namespace: infra
     name: prod
     generation: 5
+    observedGeneration: 5
+    controllerManager: "eks-controller"
+    lifecyclePhase: "Ready"
   child:
     apiVersion: v1
     kind: ConfigMap
     namespace: infra
     name: cluster-config
-  oldObject: { ... }      # Previous state (UPDATE only)
-  newObject: { ... }      # New state
+    uid: "abc-123-def"
+    generation: 3
+  oldObject: { ... }      # Previous state (UPDATE only, optional)
+  newObject: { ... }      # Current state (required)
   request:
     user: "system:serviceaccount:infra:eks-controller"
+    groups:
+      - "system:serviceaccounts"
+      - "system:serviceaccounts:infra"
     uid: "abc-123"
     fieldManager: "eks-controller"
     operation: "UPDATE"
-  detection:
-    parentGeneration: 5
-    parentObservedGeneration: 5
-    controllerManager: "eks-controller"
-    lifecyclePhase: "Ready"
+    dryRun: false
 ```
+
+**Key design decisions:**
+- No `ObjectMeta` — transient type with no persistence, only `TypeMeta` for API identification
+- Parent includes `observedGeneration`, `controllerManager`, `lifecyclePhase` — all detection context in one place
+- Uses `runtime.RawExtension` for embedded objects (standard Kubernetes type)
+- `newObject` is required, `oldObject` is optional (only for UPDATE)
 
 #### Resolution Triggers
 

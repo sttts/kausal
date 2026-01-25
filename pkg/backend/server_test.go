@@ -30,10 +30,13 @@ func TestServer_Webhook_ReceivesDriftReport(t *testing.T) {
 			ID:    "webhook-test-001",
 			Phase: v1alpha1.DriftReportPhaseDetected,
 			Parent: v1alpha1.ObjectReference{
-				APIVersion: "apps/v1",
-				Kind:       "Deployment",
-				Namespace:  "production",
-				Name:       "api-server",
+				APIVersion:         "apps/v1",
+				Kind:               "Deployment",
+				Namespace:          "production",
+				Name:               "api-server",
+				ObservedGeneration: 5,
+				ControllerManager:  "deployment-controller",
+				LifecyclePhase:     "Ready",
 			},
 			Child: v1alpha1.ObjectReference{
 				APIVersion: "v1",
@@ -47,12 +50,6 @@ func TestServer_Webhook_ReceivesDriftReport(t *testing.T) {
 				UID:          "abc-123",
 				Operation:    "UPDATE",
 				FieldManager: "deployment-controller",
-			},
-			Detection: v1alpha1.DetectionContext{
-				ParentGeneration:         5,
-				ParentObservedGeneration: 5,
-				ControllerManager:        "deployment-controller",
-				LifecyclePhase:           "Ready",
 			},
 		},
 	}
@@ -134,7 +131,7 @@ func TestServer_Webhook_WithOldAndNewObject(t *testing.T) {
 				Namespace:  "default",
 				Name:       "app-config",
 			},
-			OldObject: runtime.RawExtension{Raw: oldBytes},
+			OldObject: &runtime.RawExtension{Raw: oldBytes},
 			NewObject: runtime.RawExtension{Raw: newBytes},
 			Request: v1alpha1.RequestContext{
 				User:      "my-controller",
@@ -153,6 +150,7 @@ func TestServer_Webhook_WithOldAndNewObject(t *testing.T) {
 
 	stored, ok := server.Store().Get("drift-with-objects")
 	require.True(t, ok)
+	assert.NotNil(t, stored.Report.Spec.OldObject)
 	assert.NotEmpty(t, stored.Report.Spec.OldObject.Raw)
 	assert.NotEmpty(t, stored.Report.Spec.NewObject.Raw)
 }
@@ -372,11 +370,14 @@ func TestServer_FullWorkflow(t *testing.T) {
 			ID:    "workflow-test",
 			Phase: v1alpha1.DriftReportPhaseDetected,
 			Parent: v1alpha1.ObjectReference{
-				APIVersion: "apps/v1",
-				Kind:       "Deployment",
-				Namespace:  "default",
-				Name:       "web-app",
-				Generation: 10,
+				APIVersion:         "apps/v1",
+				Kind:               "Deployment",
+				Namespace:          "default",
+				Name:               "web-app",
+				Generation:         10,
+				ObservedGeneration: 10,
+				ControllerManager:  "web-controller",
+				LifecyclePhase:     "Ready",
 			},
 			Child: v1alpha1.ObjectReference{
 				APIVersion: "v1",
@@ -389,12 +390,6 @@ func TestServer_FullWorkflow(t *testing.T) {
 				UID:          "req-123",
 				Operation:    "UPDATE",
 				FieldManager: "web-controller",
-			},
-			Detection: v1alpha1.DetectionContext{
-				ParentGeneration:         10,
-				ParentObservedGeneration: 10,
-				ControllerManager:        "web-controller",
-				LifecyclePhase:           "Ready",
 			},
 		},
 	}
@@ -423,7 +418,7 @@ func TestServer_FullWorkflow(t *testing.T) {
 
 	var detail StoredReport
 	_ = json.Unmarshal(rec.Body.Bytes(), &detail)
-	assert.Equal(t, "web-controller", detail.Report.Spec.Detection.ControllerManager)
+	assert.Equal(t, "web-controller", detail.Report.Spec.Parent.ControllerManager)
 
 	// 4. Receive resolution
 	resolved := v1alpha1.DriftReport{

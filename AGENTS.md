@@ -58,6 +58,15 @@ The system identifies the controller by checking who owns `status.observedGenera
 - **`pkg/config/`** - Configuration handling
   - `config.go` - Per-resource enforce mode configuration
 
+- **`pkg/callback/`** - Drift notification webhook callbacks
+  - `v1alpha1/types.go` - `DriftReport`, `DriftReportResponse`, `ObjectReference`, `RequestContext`
+  - `sender.go` - HTTP client for sending DriftReports to webhook endpoints
+  - `tracker.go` - ID tracking for deduplication
+
+- **`pkg/backend/`** - Backend server implementations
+  - `server.go` - HTTP server with in-memory drift store
+  - `store.go` - Thread-safe drift report storage
+
 - **`pkg/testing/`** - Test helpers
   - `eventually.go` - Eventually helpers with verbose YAML logging
 

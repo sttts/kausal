@@ -152,7 +152,7 @@ func TestBackendReceivesDriftReports(t *testing.T) {
 		// Get logs from the backend pod
 		podName := pods.Items[0].Name
 		req := clientset.CoreV1().Pods(kausalityNS).GetLogs(podName, &corev1.PodLogOptions{
-			TailLines: ptr(int64(100)),
+			TailLines: ptr(int64(1000)),
 		})
 		logs, err := req.Do(ctx).Raw()
 		if err != nil {

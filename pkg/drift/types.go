@@ -15,6 +15,8 @@ type DriftResult struct {
 	DriftDetected bool
 	// ParentRef identifies the parent object, if found.
 	ParentRef *ParentRef
+	// ParentState contains the parent's generation and controller info.
+	ParentState *ParentState
 	// LifecyclePhase indicates the parent's lifecycle phase.
 	LifecyclePhase LifecyclePhase
 }

@@ -193,9 +193,12 @@ func (s *Sender) doSend(ctx context.Context, body []byte, id string) error {
 
 // SendAsync sends a DriftReport asynchronously.
 // The report is sent in a goroutine and any errors are logged but not returned.
-func (s *Sender) SendAsync(ctx context.Context, report *v1alpha1.DriftReport) {
+// Uses a background context since the original request context may be canceled.
+func (s *Sender) SendAsync(_ context.Context, report *v1alpha1.DriftReport) {
 	go func() {
-		if err := s.Send(ctx, report); err != nil {
+		// Use background context since the admission request context will be canceled
+		// after the response is sent, but we still want to complete the HTTP request.
+		if err := s.Send(context.Background(), report); err != nil {
 			s.log.Error(err, "async drift report send failed", "id", report.Spec.ID)
 		}
 	}()

@@ -18,19 +18,19 @@ func TestDriftReport_JSONRoundTrip(t *testing.T) {
 			APIVersion: GroupName + "/" + Version,
 			Kind:       "DriftReport",
 		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-report",
-		},
 		Spec: DriftReportSpec{
 			ID:    "a1b2c3d4e5f67890",
 			Phase: DriftReportPhaseDetected,
 			Parent: ObjectReference{
-				APIVersion: "example.com/v1alpha1",
-				Kind:       "EKSCluster",
-				Namespace:  "infra",
-				Name:       "prod",
-				UID:        types.UID("parent-uid"),
-				Generation: 5,
+				APIVersion:         "example.com/v1alpha1",
+				Kind:               "EKSCluster",
+				Namespace:          "infra",
+				Name:               "prod",
+				UID:                types.UID("parent-uid"),
+				Generation:         5,
+				ObservedGeneration: 5,
+				ControllerManager:  "eks-controller",
+				LifecyclePhase:     "Ready",
 			},
 			Child: ObjectReference{
 				APIVersion: "v1",
@@ -40,7 +40,7 @@ func TestDriftReport_JSONRoundTrip(t *testing.T) {
 				UID:        types.UID("child-uid"),
 				Generation: 3,
 			},
-			OldObject: runtime.RawExtension{Raw: []byte(`{"data":{"key":"old"}}`)},
+			OldObject: &runtime.RawExtension{Raw: []byte(`{"data":{"key":"old"}}`)},
 			NewObject: runtime.RawExtension{Raw: []byte(`{"data":{"key":"new"}}`)},
 			Request: RequestContext{
 				User:         "system:serviceaccount:infra:eks-controller",
@@ -48,12 +48,7 @@ func TestDriftReport_JSONRoundTrip(t *testing.T) {
 				UID:          "request-uid-123",
 				FieldManager: "eks-controller",
 				Operation:    "UPDATE",
-			},
-			Detection: DetectionContext{
-				ParentGeneration:         5,
-				ParentObservedGeneration: 5,
-				ControllerManager:        "eks-controller",
-				LifecyclePhase:           "Ready",
+				DryRun:       true,
 			},
 		},
 	}
@@ -69,13 +64,11 @@ func TestDriftReport_JSONRoundTrip(t *testing.T) {
 
 	// Verify fields
 	assert.Equal(t, report.TypeMeta, decoded.TypeMeta)
-	assert.Equal(t, report.Name, decoded.Name)
 	assert.Equal(t, report.Spec.ID, decoded.Spec.ID)
 	assert.Equal(t, report.Spec.Phase, decoded.Spec.Phase)
 	assert.Equal(t, report.Spec.Parent, decoded.Spec.Parent)
 	assert.Equal(t, report.Spec.Child, decoded.Spec.Child)
 	assert.Equal(t, report.Spec.Request, decoded.Spec.Request)
-	assert.Equal(t, report.Spec.Detection, decoded.Spec.Detection)
 }
 
 func TestDriftReportResponse_JSONRoundTrip(t *testing.T) {
