@@ -103,6 +103,47 @@ Here, `capi-controller` is the controller. Any child update with `fieldManager: 
 
 **Implementation:** Use `sigs.k8s.io/structured-merge-diff` for parsing managedFields. This is the official library used by the Kubernetes API server.
 
+### Annotation Protection from Controller Sync
+
+Kubernetes controllers (e.g., deployment-controller) copy annotations from parent to child on both CREATE and UPDATE. This overwrites kausality's computed annotations with stale values from the parent.
+
+**Problem sequence:**
+1. Deployment CREATE → webhook adds 1-hop trace
+2. RS CREATE → controller copies Deployment's 1-hop trace, webhook patches to 2-hop
+3. RS stored with correct 2-hop trace
+4. Controller sees RS annotations differ from Deployment
+5. Controller UPDATEs RS with 1-hop annotations → **overwrites our values**
+
+**Solution:** Three compute functions handle annotations for different update types.
+
+**Annotation categories:**
+- **System annotations** (`trace`, `updaters`, `controllers`): Special handling based on context
+- **User annotations** (`approvals`, `rejections`, `freeze`, `snooze`, `trace-*`): Always preserved from OldObject on controller updates
+
+**Compute functions:**
+
+| Function | Use Case | System annotations | User annotations |
+|----------|----------|-------------------|------------------|
+| `computeAnnotationsForController` | Controller spec/metadata updates | Recompute (spec change) or preserve (no spec change) | Preserve from old |
+| `computeAnnotationsForUser` | User spec updates | New origin (spec change) or preserve (no spec change) | User can modify |
+| `computeAnnotationsForStatusUpdate` | Status subresource updates | Preserve + add user to controllers | Preserve from old |
+
+**UPDATE handling:**
+
+| Scenario | System annotations | User annotations |
+|----------|-------------------|------------------|
+| No spec change | Preserve from OldObject | Preserve from OldObject |
+| Controller + spec change | Recompute trace/updaters, preserve controllers | Preserve from OldObject |
+| User + spec change | New origin (trace/updaters) | Normal (user can modify) |
+
+**Child as parent:** A ReplicaSet can be both a child (of Deployment) and a parent (of Pods). The `controllers` annotation (who updates status) is always preserved on child spec updates since it's not recomputed for the child role.
+
+**Status updates:** Recording controller identity is synchronous via patch (adds user hash to `controllers` annotation), with async backup update via `RecordControllerAsync`.
+
+**Key insight:** No spec change = no legitimate reason to change annotations. Always preserve all kausality annotations from OldObject unconditionally.
+
+**CREATE handling:** Wipe all `kausality.io/*` annotations copied from parent, then compute fresh values.
+
 **For Terraform (L0 controllers)**:
 - Check if plan is non-empty when generation == observedGeneration
 - Use drift notification webhooks for plan review workflows

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	jsonpatch "gomodules.xyz/jsonpatch/v2"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -101,6 +102,19 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 			return admission.Errored(http.StatusBadRequest, fmt.Errorf("failed to check spec change: %w", err))
 		}
 		if !specChanged {
+			// No spec change: preserve all kausality annotations (regardless of actor)
+			var oldObj, newObj unstructured.Unstructured
+			if err := json.Unmarshal(req.OldObject.Raw, &oldObj); err == nil {
+				if err := json.Unmarshal(req.Object.Raw, &newObj); err == nil {
+					// specChanged=false means newTrace/newUpdaters are unused
+					merged := computeAnnotationsForUser(oldObj.GetAnnotations(), newObj.GetAnnotations(), false, "", "")
+					newObj.SetAnnotations(merged)
+					if modified, err := json.Marshal(newObj.Object); err == nil {
+						log.V(1).Info("no spec change, preserving annotations")
+						return admission.PatchResponseFromRaw(req.Object.Raw, modified)
+					}
+				}
+			}
 			log.V(2).Info("no spec change, skipping")
 			return admission.Allowed("no spec change")
 		}
@@ -258,31 +272,83 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[trace.TraceAnnotation] = traceResult.Trace.String()
-	annotations[controller.UpdatersAnnotation] = addHash(
-		annotations[controller.UpdatersAnnotation],
-		userHash,
-	)
 
-	unstrObj.SetAnnotations(annotations)
-
-	modified, err := json.Marshal(unstrObj.Object)
-	if err != nil {
-		log.Error(err, "failed to marshal modified object")
-		return withWarnings(admission.Allowed(driftResult.Reason), warnings)
+	// On CREATE, wipe ALL kausality annotations copied from parent (e.g., deployment controller
+	// copies Deployment annotations to ReplicaSet). We set fresh values based on our computation.
+	if req.Operation == admissionv1.Create {
+		for key := range annotations {
+			if strings.HasPrefix(key, "kausality.io/") {
+				delete(annotations, key)
+			}
+		}
 	}
 
-	resp := admission.PatchResponseFromRaw(req.Object.Raw, modified)
+	newTrace := traceResult.Trace.String()
+	newUpdaters := addHash(annotations[controller.UpdatersAnnotation], userHash)
+
+	// Build patches - need to handle case where annotations don't exist
+	var patches []jsonpatch.JsonPatchOperation
+
+	// Check if the original object has annotations
+	originalAnnotations, _, _ := unstructured.NestedStringMap(unstrObj.Object, "metadata", "annotations")
+	if len(originalAnnotations) == 0 {
+		// No annotations exist - add the whole annotations object
+		patches = append(patches, jsonpatch.JsonPatchOperation{
+			Operation: "add",
+			Path:      "/metadata/annotations",
+			Value: map[string]string{
+				trace.TraceAnnotation:         newTrace,
+				controller.UpdatersAnnotation: newUpdaters,
+			},
+		})
+	} else {
+		// Annotations exist - use replace for existing keys, add for new ones
+		tracePath := "/metadata/annotations/" + strings.ReplaceAll(trace.TraceAnnotation, "/", "~1")
+		updatersPath := "/metadata/annotations/" + strings.ReplaceAll(controller.UpdatersAnnotation, "/", "~1")
+
+		// Check if keys exist to decide add vs replace
+		traceOp := "add"
+		if _, exists := originalAnnotations[trace.TraceAnnotation]; exists {
+			traceOp = "replace"
+		}
+		updatersOp := "add"
+		if _, exists := originalAnnotations[controller.UpdatersAnnotation]; exists {
+			updatersOp = "replace"
+		}
+
+		patches = append(patches, jsonpatch.JsonPatchOperation{
+			Operation: traceOp,
+			Path:      tracePath,
+			Value:     newTrace,
+		})
+		patches = append(patches, jsonpatch.JsonPatchOperation{
+			Operation: updatersOp,
+			Path:      updatersPath,
+			Value:     newUpdaters,
+		})
+	}
+
+	// Build response manually to ensure patch is serialized correctly
+	patchType := admissionv1.PatchTypeJSONPatch
+	resp := admission.Response{
+		Patches: patches,
+		AdmissionResponse: admissionv1.AdmissionResponse{
+			Allowed:   true,
+			PatchType: &patchType,
+		},
+	}
+
 	return withWarnings(resp, warnings)
 }
 
 // handleStatusUpdate handles status subresource updates to record controller identity.
+// It also protects our annotations from being overwritten by stale controller caches.
 func (h *Handler) handleStatusUpdate(ctx context.Context, req admission.Request, log logr.Logger) admission.Response {
 	if req.Operation != admissionv1.Update {
 		return admission.Allowed("status subresource: only UPDATE is relevant")
 	}
 
-	// Parse the object
+	// Parse the object for controller tracking
 	obj, err := h.parseObject(req)
 	if err != nil {
 		log.Error(err, "failed to parse object from status update request")
@@ -291,13 +357,24 @@ func (h *Handler) handleStatusUpdate(ctx context.Context, req admission.Request,
 
 	// Get user identifier (username if available, UID as fallback)
 	userID := controller.UserIdentifier(req.UserInfo.Username, req.UserInfo.UID)
+	userHash := controller.HashUsername(userID)
+	log.V(1).Info("status update", "userHash", userHash)
 
-	// Record the controller asynchronously
-	// This adds the user hash to the object's kausality.io/controllers annotation
+	// Record controller asynchronously as backup (in case sync patch fails)
 	h.controllerTracker.RecordControllerAsync(ctx, obj, userID)
 
-	userHash := controller.HashUsername(userID)
-	log.V(1).Info("recorded status updater", "userHash", userHash)
+	// Compute annotations: preserve kausality annotations and add user to controllers
+	var oldObj, newObj unstructured.Unstructured
+	if err := json.Unmarshal(req.OldObject.Raw, &oldObj); err == nil {
+		if err := json.Unmarshal(req.Object.Raw, &newObj); err == nil {
+			merged := computeAnnotationsForStatusUpdate(oldObj.GetAnnotations(), newObj.GetAnnotations(), userHash)
+			newObj.SetAnnotations(merged)
+			if modified, err := json.Marshal(newObj.Object); err == nil {
+				log.V(1).Info("status update, added controller hash and preserved annotations")
+				return admission.PatchResponseFromRaw(req.Object.Raw, modified)
+			}
+		}
+	}
 
 	return admission.Allowed("status update recorded")
 }
@@ -323,6 +400,104 @@ func addHash(existing, hash string) string {
 		hashes = hashes[len(hashes)-controller.MaxHashes:]
 	}
 	return strings.Join(hashes, ",")
+}
+
+// kausalityPrefix is the prefix for all kausality annotations.
+const kausalityPrefix = "kausality.io/"
+
+// systemAnnotations are annotations with special handling (recomputed on spec change).
+var systemAnnotations = map[string]bool{
+	trace.TraceAnnotation:            true,
+	controller.UpdatersAnnotation:    true,
+	controller.ControllersAnnotation: true,
+}
+
+// isSystemAnnotation returns true for annotations that get special handling.
+func isSystemAnnotation(key string) bool {
+	return systemAnnotations[key]
+}
+
+// isKausalityAnnotation returns true for any kausality.io/* annotation.
+func isKausalityAnnotation(key string) bool {
+	return strings.HasPrefix(key, kausalityPrefix)
+}
+
+// computeAnnotationsForController computes annotations for controller updates.
+// - No spec change: preserve ALL kausality annotations from old
+// - Spec change: set system annotations to computed values, preserve user annotations from old
+func computeAnnotationsForController(old, new map[string]string, specChanged bool, newTrace, newUpdaters string) map[string]string {
+	result := copyAnnotations(new)
+
+	if specChanged {
+		// Set system annotations to computed values
+		result[trace.TraceAnnotation] = newTrace
+		result[controller.UpdatersAnnotation] = newUpdaters
+		// Preserve controllers annotation from old (not recomputed on child spec updates).
+		// A child can also be a parent (e.g., ReplicaSet is parent to Pods).
+		if oldControllers, ok := old[controller.ControllersAnnotation]; ok {
+			result[controller.ControllersAnnotation] = oldControllers
+		}
+		// Preserve user annotations from old
+		for key, oldVal := range old {
+			if isKausalityAnnotation(key) && !isSystemAnnotation(key) {
+				result[key] = oldVal
+			}
+		}
+	} else {
+		// No spec change: preserve ALL kausality annotations from old
+		for key, oldVal := range old {
+			if isKausalityAnnotation(key) {
+				result[key] = oldVal
+			}
+		}
+	}
+	return result
+}
+
+// computeAnnotationsForUser computes annotations for user updates.
+// - No spec change: preserve ALL kausality annotations from old
+// - Spec change: set system annotations to computed values (new origin, no preservation)
+func computeAnnotationsForUser(old, new map[string]string, specChanged bool, newTrace, newUpdaters string) map[string]string {
+	result := copyAnnotations(new)
+
+	if specChanged {
+		// New origin: set system annotations, no preservation from old
+		result[trace.TraceAnnotation] = newTrace
+		result[controller.UpdatersAnnotation] = newUpdaters
+	} else {
+		// No spec change: preserve ALL kausality annotations from old
+		for key, oldVal := range old {
+			if isKausalityAnnotation(key) {
+				result[key] = oldVal
+			}
+		}
+	}
+	return result
+}
+
+// computeAnnotationsForStatusUpdate computes annotations for status subresource updates.
+// Preserves all kausality annotations and adds the user hash to the controllers annotation.
+func computeAnnotationsForStatusUpdate(old, new map[string]string, userHash string) map[string]string {
+	result := copyAnnotations(new)
+	// Preserve all kausality annotations from old
+	for key, oldVal := range old {
+		if isKausalityAnnotation(key) {
+			result[key] = oldVal
+		}
+	}
+	// Add user to controllers annotation (status updater = controller)
+	oldControllers := result[controller.ControllersAnnotation]
+	result[controller.ControllersAnnotation] = addHash(oldControllers, userHash)
+	return result
+}
+
+// copyAnnotations creates a copy of the annotations map.
+func copyAnnotations(m map[string]string) map[string]string {
+	result := make(map[string]string, len(m))
+	for k, v := range m {
+		result[k] = v
+	}
+	return result
 }
 
 // parseObject parses the object from the admission request.

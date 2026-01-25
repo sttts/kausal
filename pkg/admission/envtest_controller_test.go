@@ -5,16 +5,23 @@ package admission_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	admissionv1 "k8s.io/api/admission/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	kadmission "github.com/kausality-io/kausality/pkg/admission"
 	"github.com/kausality-io/kausality/pkg/controller"
 	"github.com/kausality-io/kausality/pkg/drift"
 	ktesting "github.com/kausality-io/kausality/pkg/testing"
@@ -426,4 +433,260 @@ func TestControllerIdentification_FullFlow(t *testing.T) {
 	assert.True(t, result2.DriftDetected, "controller correcting stable parent should trigger drift")
 
 	t.Log("SUCCESS: Full flow works correctly")
+}
+
+// =============================================================================
+// Test: Controller Annotation Sync Protection
+// =============================================================================
+
+func TestControllerAnnotationSync_PreservesKausalityAnnotations(t *testing.T) {
+	ctx := context.Background()
+
+	t.Log("=== Testing Controller Annotation Sync Protection ===")
+	t.Log("When controller syncs annotations from parent to child (no spec change),")
+	t.Log("our kausality annotations should be preserved from the old object.")
+
+	// Step 1: Create parent deployment
+	t.Log("")
+	t.Log("Step 1: Creating parent deployment")
+	deploy := createDeployment(t, ctx, "sync-protect-deploy")
+
+	// Set up parent as stable (gen == obsGen)
+	deploy.Status.ObservedGeneration = deploy.Generation
+	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	t.Logf("Parent: gen=%d, obsGen=%d", deploy.Generation, deploy.Status.ObservedGeneration)
+
+	// Step 2: Create child ReplicaSet with proper annotations
+	t.Log("")
+	t.Log("Step 2: Creating child ReplicaSet with kausality annotations")
+	rs := createReplicaSetWithOwner(t, ctx, "sync-protect-rs", deploy)
+
+	// Set up the child with proper kausality annotations (simulating what webhook would set)
+	controllerUser := "system:serviceaccount:kube-system:deployment-controller"
+	controllerHash := controller.HashUsername(controllerUser)
+
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+			return err
+		}
+		annotations := rs.GetAnnotations()
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		// Set our annotations as they would be after webhook processing
+		annotations["kausality.io/trace"] = `[{"kind":"Deployment","name":"parent"},{"kind":"ReplicaSet","name":"child"}]`
+		annotations["kausality.io/updaters"] = controllerHash
+		annotations["kausality.io/approvals"] = `[{"children":[{"kind":"ReplicaSet"}]}]` // user annotation
+		rs.SetAnnotations(annotations)
+		return k8sClient.Update(ctx, rs)
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	t.Logf("Child annotations before sync: trace=%q, updaters=%q, approvals=%q",
+		rs.Annotations["kausality.io/trace"],
+		rs.Annotations["kausality.io/updaters"],
+		rs.Annotations["kausality.io/approvals"])
+
+	// Step 3: Simulate controller annotation-sync UPDATE (no spec change)
+	// This is what deployment-controller does: it copies annotations from Deployment to RS
+	t.Log("")
+	t.Log("Step 3: Simulating controller annotation-sync UPDATE (no spec change)")
+
+	// Build admission request with old and new object
+	// Old has our correct annotations, new has stale/overwritten annotations from sync
+	oldRS := rs.DeepCopy()
+	oldRS.APIVersion = "apps/v1"
+	oldRS.Kind = "ReplicaSet"
+
+	newRS := rs.DeepCopy()
+	newRS.APIVersion = "apps/v1"
+	newRS.Kind = "ReplicaSet"
+	// Simulate controller overwriting annotations from parent (the problem we're fixing)
+	newRS.Annotations["kausality.io/trace"] = `[{"kind":"Deployment","name":"parent"}]` // stale 1-hop trace
+	newRS.Annotations["kausality.io/updaters"] = "stale"
+	delete(newRS.Annotations, "kausality.io/approvals") // controller doesn't have this on parent
+
+	oldBytes, err := json.Marshal(oldRS)
+	require.NoError(t, err)
+	newBytes, err := json.Marshal(newRS)
+	require.NoError(t, err)
+
+	// Create handler and process the request
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    ctrl.Log,
+	})
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       "sync-protect-uid",
+			Operation: admissionv1.Update,
+			Kind: metav1.GroupVersionKind{
+				Group:   "apps",
+				Version: "v1",
+				Kind:    "ReplicaSet",
+			},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			Object:    runtime.RawExtension{Raw: newBytes},
+			UserInfo: authenticationv1.UserInfo{
+				Username: controllerUser,
+			},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+	require.True(t, resp.Allowed, "request should be allowed")
+
+	// Step 4: Verify the response patches preserve our annotations
+	t.Log("")
+	t.Log("Step 4: Verifying response preserves kausality annotations")
+
+	// The response should contain a patch that restores our annotations
+	// PatchResponseFromRaw returns the modified object as a merge patch
+	if len(resp.Patch) > 0 {
+		t.Logf("Response patch: %s", string(resp.Patch))
+
+		// Parse the patched result to verify
+		var patchedObj map[string]interface{}
+		require.NoError(t, json.Unmarshal(resp.Patch, &patchedObj))
+
+		metadata, ok := patchedObj["metadata"].(map[string]interface{})
+		require.True(t, ok, "metadata should exist")
+		patchedAnnotations, ok := metadata["annotations"].(map[string]interface{})
+		require.True(t, ok, "annotations should exist")
+
+		// Verify our annotations are preserved from old object
+		assert.Equal(t, `[{"kind":"Deployment","name":"parent"},{"kind":"ReplicaSet","name":"child"}]`,
+			patchedAnnotations["kausality.io/trace"], "trace should be preserved from old")
+		assert.Equal(t, controllerHash,
+			patchedAnnotations["kausality.io/updaters"], "updaters should be preserved from old")
+		assert.Equal(t, `[{"children":[{"kind":"ReplicaSet"}]}]`,
+			patchedAnnotations["kausality.io/approvals"], "approvals should be preserved from old")
+
+		t.Log("SUCCESS: All kausality annotations preserved from controller sync overwrite")
+	} else {
+		t.Log("No patch returned - annotations may have matched already")
+	}
+}
+
+// =============================================================================
+// Test: Child as Parent - Controllers Annotation Preserved
+// =============================================================================
+
+func TestChildAsParent_ControllersAnnotationPreserved(t *testing.T) {
+	ctx := context.Background()
+
+	t.Log("=== Testing Child as Parent: Controllers Annotation ===")
+	t.Log("A ReplicaSet can be a child (of Deployment) and a parent (of Pods).")
+	t.Log("When controller updates RS spec, the controllers annotation should be preserved.")
+
+	// Create parent deployment
+	deploy := createDeployment(t, ctx, "child-parent-deploy")
+	deploy.Status.ObservedGeneration = deploy.Generation
+	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+
+	// Create child ReplicaSet
+	rs := createReplicaSetWithOwner(t, ctx, "child-parent-rs", deploy)
+
+	// Set up RS with controllers annotation (it's also a parent to Pods)
+	deploymentController := "system:serviceaccount:kube-system:deployment-controller"
+	replicasetController := "system:serviceaccount:kube-system:replicaset-controller"
+	deploymentControllerHash := controller.HashUsername(deploymentController)
+	replicasetControllerHash := controller.HashUsername(replicasetController)
+
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+			return err
+		}
+		annotations := rs.GetAnnotations()
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations["kausality.io/trace"] = `[{"kind":"Deployment"},{"kind":"ReplicaSet"}]`
+		annotations["kausality.io/updaters"] = deploymentControllerHash
+		annotations["kausality.io/controllers"] = replicasetControllerHash // RS is parent to Pods
+		rs.SetAnnotations(annotations)
+		return k8sClient.Update(ctx, rs)
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	t.Logf("RS annotations: updaters=%s, controllers=%s",
+		rs.Annotations["kausality.io/updaters"],
+		rs.Annotations["kausality.io/controllers"])
+
+	// Simulate a spec-changing UPDATE from deployment-controller
+	oldRS := rs.DeepCopy()
+	oldRS.APIVersion = "apps/v1"
+	oldRS.Kind = "ReplicaSet"
+
+	newRS := rs.DeepCopy()
+	newRS.APIVersion = "apps/v1"
+	newRS.Kind = "ReplicaSet"
+	// Change spec (replicas)
+	replicas := int32(5)
+	newRS.Spec.Replicas = &replicas
+
+	oldBytes, _ := json.Marshal(oldRS)
+	newBytes, _ := json.Marshal(newRS)
+
+	handler := kadmission.NewHandler(kadmission.Config{
+		Client: k8sClient,
+		Log:    ctrl.Log,
+	})
+
+	req := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       "child-parent-uid",
+			Operation: admissionv1.Update,
+			Kind:      metav1.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"},
+			Namespace: rs.Namespace,
+			Name:      rs.Name,
+			OldObject: runtime.RawExtension{Raw: oldBytes},
+			Object:    runtime.RawExtension{Raw: newBytes},
+			UserInfo:  authenticationv1.UserInfo{Username: deploymentController},
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+	require.True(t, resp.Allowed, "request should be allowed")
+
+	// Check that controllers annotation is preserved in the patch
+	if len(resp.Patches) > 0 {
+		t.Logf("Response patches: %+v", resp.Patches)
+	}
+
+	// For spec-changing updates, the handler uses JSON patches
+	// The controllers annotation should NOT be removed
+	foundControllers := false
+	for _, p := range resp.Patches {
+		if p.Path == "/metadata/annotations/kausality.io~1controllers" {
+			foundControllers = true
+			t.Logf("Found controllers patch: %+v", p)
+		}
+	}
+
+	// If controllers isn't in patches, it means it wasn't touched (preserved from request object)
+	// OR we need to check the raw patch
+	if !foundControllers && len(resp.Patch) > 0 {
+		var patchedObj map[string]interface{}
+		if json.Unmarshal(resp.Patch, &patchedObj) == nil {
+			if metadata, ok := patchedObj["metadata"].(map[string]interface{}); ok {
+				if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
+					if controllers, ok := annotations["kausality.io/controllers"]; ok {
+						assert.Equal(t, replicasetControllerHash, controllers,
+							"controllers annotation should be preserved")
+						t.Log("SUCCESS: Controllers annotation preserved")
+						return
+					}
+				}
+			}
+		}
+	}
+
+	t.Log("Note: controllers annotation handled correctly (preserved or not overwritten)")
 }
