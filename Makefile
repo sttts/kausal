@@ -105,27 +105,65 @@ e2e: ## Run Kubernetes e2e tests against current cluster.
 	go test ./test/e2e/kubernetes -tags=e2e -v -timeout 10m
 
 .PHONY: e2e-crossplane
-e2e-crossplane: install-crossplane ## Run Crossplane e2e tests against current cluster.
+e2e-crossplane: install-crossplane ## Run Crossplane e2e tests (installs Crossplane first).
+	go test ./test/e2e/crossplane -tags=e2e -v -timeout 10m
+
+.PHONY: e2e-crossplane-test
+e2e-crossplane-test: ## Run Crossplane e2e tests only (no dependency install).
 	go test ./test/e2e/crossplane -tags=e2e -v -timeout 10m
 
 .PHONY: install-crossplane
-install-crossplane: helm ## Install Crossplane, provider-nop, and function on current cluster.
-	@echo "Installing Crossplane..."
-	$(HELM) repo add crossplane-stable https://charts.crossplane.io/stable 2>/dev/null || true
-	$(HELM) repo update
-	$(HELM) upgrade --install crossplane crossplane-stable/crossplane \
-		--namespace crossplane-system --create-namespace --wait --timeout 300s
-	@echo "Waiting for Crossplane..."
-	kubectl wait --for=condition=ready pod -l app=crossplane -n crossplane-system --timeout=120s
-	@echo "Installing provider-nop..."
-	kubectl apply -f - <<< '{"apiVersion":"pkg.crossplane.io/v1","kind":"Provider","metadata":{"name":"provider-nop"},"spec":{"package":"xpkg.upbound.io/crossplane-contrib/provider-nop:v0.3.0"}}'
-	@echo "Installing function-patch-and-transform..."
-	kubectl apply -f - <<< '{"apiVersion":"pkg.crossplane.io/v1beta1","kind":"Function","metadata":{"name":"function-patch-and-transform"},"spec":{"package":"xpkg.upbound.io/crossplane-contrib/function-patch-and-transform:v0.7.0"}}'
-	@echo "Waiting for provider-nop to be healthy..."
-	@until kubectl get provider provider-nop -o jsonpath='{.status.conditions[?(@.type=="Healthy")].status}' 2>/dev/null | grep -q True; do sleep 2; done
-	@echo "Waiting for function to be healthy..."
-	@until kubectl get function function-patch-and-transform -o jsonpath='{.status.conditions[?(@.type=="Healthy")].status}' 2>/dev/null | grep -q True; do sleep 2; done
-	@echo "Crossplane installed."
+install-crossplane: ## Install Crossplane, provider-nop, and function on current cluster.
+	./test/e2e/crossplane/install-deps.sh
+
+.PHONY: install-e2e
+install-e2e: helm ## Install kausality for E2E tests. Requires WEBHOOK_IMAGE and BACKEND_IMAGE.
+	@test -n "$${WEBHOOK_IMAGE}" || { echo "WEBHOOK_IMAGE is required"; exit 1; }
+	@test -n "$${BACKEND_IMAGE}" || { echo "BACKEND_IMAGE is required"; exit 1; }
+	$(HELM) upgrade --install kausality ./charts/kausality \
+		--namespace kausality-system --create-namespace \
+		--set image.repository="$${WEBHOOK_IMAGE%:*}" \
+		--set image.tag="$${WEBHOOK_IMAGE##*:}" \
+		--set image.pullPolicy=Never \
+		--set backend.enabled=true \
+		--set backend.image.repository="$${BACKEND_IMAGE%:*}" \
+		--set backend.image.tag="$${BACKEND_IMAGE##*:}" \
+		--set backend.image.pullPolicy=Never \
+		--set driftCallback.enabled=true \
+		--set certificates.selfSigned.enabled=true \
+		--set 'resourceRules.include[0].apiGroups={apps}' \
+		--set 'resourceRules.include[0].resources={deployments,replicasets}' \
+		--set logging.development=true \
+		--wait --timeout 180s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality -n kausality-system --timeout=180s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-backend -n kausality-system --timeout=180s
+
+.PHONY: install-e2e-crossplane
+install-e2e-crossplane: helm ## Install kausality for Crossplane E2E tests. Requires WEBHOOK_IMAGE and BACKEND_IMAGE.
+	@test -n "$${WEBHOOK_IMAGE}" || { echo "WEBHOOK_IMAGE is required"; exit 1; }
+	@test -n "$${BACKEND_IMAGE}" || { echo "BACKEND_IMAGE is required"; exit 1; }
+	$(HELM) upgrade --install kausality ./charts/kausality \
+		--namespace kausality-system --create-namespace \
+		--set image.repository="$${WEBHOOK_IMAGE%:*}" \
+		--set image.tag="$${WEBHOOK_IMAGE##*:}" \
+		--set image.pullPolicy=Never \
+		--set backend.enabled=true \
+		--set backend.image.repository="$${BACKEND_IMAGE%:*}" \
+		--set backend.image.tag="$${BACKEND_IMAGE##*:}" \
+		--set backend.image.pullPolicy=Never \
+		--set driftCallback.enabled=true \
+		--set certificates.selfSigned.enabled=true \
+		--set 'resourceRules.include[0].apiGroups={nop.crossplane.io}' \
+		--set 'resourceRules.include[0].resources={*}' \
+		--set 'resourceRules.include[1].apiGroups={apps}' \
+		--set 'resourceRules.include[1].resources={deployments,replicasets}' \
+		--set 'resourceRules.include[2].apiGroups={test.kausality.io}' \
+		--set 'resourceRules.include[2].resources={*}' \
+		--set driftDetection.defaultMode=enforce \
+		--set logging.development=true \
+		--wait --timeout 300s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality -n kausality-system --timeout=180s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-backend -n kausality-system --timeout=180s
 
 ##@ Deployment
 

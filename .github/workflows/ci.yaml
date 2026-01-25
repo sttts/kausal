@@ -105,10 +105,13 @@ jobs:
       matrix:
         include:
           - suite: kubernetes
-            script: ./test/e2e/run.sh
+            install_target: install-e2e
+            test_target: e2e
             cluster: kausality-e2e
           - suite: crossplane
-            script: ./test/e2e/crossplane/run.sh
+            install_deps: ./test/e2e/crossplane/install-deps.sh
+            install_target: install-e2e-crossplane
+            test_target: e2e-crossplane-test
             cluster: kausality-crossplane-e2e
     steps:
       - name: Checkout
@@ -124,15 +127,31 @@ jobs:
         with:
           version: v3.16.3
 
-      - name: Set up kind
+      - name: Create kind cluster
         uses: helm/kind-action@v1
         with:
-          install_only: true
+          cluster_name: ${{ matrix.cluster }}
+          config: ./test/e2e/kind-config.yaml
 
       - name: Install ko
         uses: ko-build/setup-ko@v0.7
 
+      - name: Build and load images
+        run: |
+          export KO_DOCKER_REPO=ko.local
+          WEBHOOK_IMAGE=$(ko build --bare ./cmd/kausality-webhook)
+          BACKEND_IMAGE=$(ko build --bare ./cmd/kausality-backend-log)
+          kind load docker-image "$WEBHOOK_IMAGE" --name ${{ matrix.cluster }}
+          kind load docker-image "$BACKEND_IMAGE" --name ${{ matrix.cluster }}
+          echo "WEBHOOK_IMAGE=$WEBHOOK_IMAGE" >> $GITHUB_ENV
+          echo "BACKEND_IMAGE=$BACKEND_IMAGE" >> $GITHUB_ENV
+
+      - name: Install third-party dependencies
+        if: matrix.install_deps != ''
+        run: ${{ matrix.install_deps }}
+
+      - name: Install kausality
+        run: make ${{ matrix.install_target }}
+
       - name: Run e2e tests
-        run: ${{ matrix.script }}
-        env:
-          CLUSTER_NAME: ${{ matrix.cluster }}
+        run: make ${{ matrix.test_target }}

@@ -232,11 +232,13 @@ E2E tests run against a real Kubernetes cluster (kind). They are located in `tes
 **Running E2E tests:**
 
 ```bash
-# Run the full e2e test suite (creates kind cluster, deploys kausality, runs tests)
-./test/e2e/run.sh
+# Run against existing cluster with kausality deployed (via tilt up or make install)
+make e2e                    # Kubernetes E2E tests
+make e2e-crossplane         # Crossplane E2E tests (auto-installs Crossplane deps)
 
-# Run Go e2e tests directly (requires cluster with kausality already deployed)
+# Or run Go tests directly
 go test ./test/e2e/kubernetes -tags=e2e -v
+go test ./test/e2e/crossplane -tags=e2e -v
 ```
 
 **E2E test conventions:**
@@ -348,29 +350,31 @@ A task involving code or test changes is NOT done until:
   ```bash
   # Development: run tests against existing local kind cluster
   go test ./test/e2e/crossplane -tags=e2e -v
-
-  # CI only: full setup with new cluster
-  ./test/e2e/crossplane/run.sh
   ```
 
 Never commit test changes without running them first.
 
 ### E2E Development Workflow
 
-**Never create kind clusters for E2E tests.** Use your existing local cluster. CI scripts handle cluster creation.
+**Never create kind clusters for E2E tests.** Use your existing local cluster. CI handles cluster creation.
 
 ```bash
 # Run tests against current cluster
 make e2e                       # Kubernetes E2E tests
 make e2e-crossplane            # Crossplane E2E tests (auto-installs Crossplane)
 
-# Or install dependencies separately
+# Install dependencies separately
 make install-crossplane        # Install Crossplane, provider-nop, function
-make install                   # Install kausality
+make install                   # Install kausality (default values)
 tilt up                        # Auto-compile and deploy on code changes
 ```
 
-The `run.sh` scripts are for **CI only** - they create fresh kind clusters.
+### CI vs Local Development
+
+- **CI** (`.github/workflows/ci.yaml`): Creates kind cluster, builds images, calls install scripts, runs tests
+- **Local**: Use existing cluster with `tilt up` or manual `make` targets
+- **install-deps.sh**: Only installs third-party dependencies (Crossplane, providers) - no build logic
+- **Makefile**: All build logic (`ko-build-kind`), kausality installation (`install-e2e`)
 
 ## Code Style
 
