@@ -401,6 +401,12 @@ kausality/
 - [ ] Slack integration
 - [ ] UI dashboard
 
+### Coming Soon: Slack Integration
+
+<p align="center">
+  <img src="doc/slack-mock.png" alt="Slack Integration Mock" width="400" />
+</p>
+
 ---
 
 ## License
