@@ -69,7 +69,7 @@ k8s_resource(
 )
 
 k8s_resource(
-    'kausality-backend',
+    'kausality-backend-log',
     resource_deps=['create-namespace', 'kausality-webhook'],
     labels=['backend'],
 )
