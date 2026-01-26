@@ -50,13 +50,15 @@ func TestBackendPodReady(t *testing.T) {
 }
 
 // TestBackendReceivesDriftReports verifies that DriftReports are sent to the backend
-// when drift is detected. This test triggers a drift scenario and checks the backend logs.
+// when drift is detected. This test triggers actual drift by modifying a ReplicaSet
+// directly, causing the Deployment controller to correct it.
 func TestBackendReceivesDriftReports(t *testing.T) {
 	ctx := context.Background()
 	name := fmt.Sprintf("drift-backend-%s", rand.String(4))
 
 	t.Log("=== Testing Backend DriftReport Reception ===")
 	t.Log("When drift is detected, the webhook should send a DriftReport to the backend.")
+	t.Log("We trigger drift by modifying a ReplicaSet directly - the controller's correction is drift.")
 
 	// Step 1: Create a Deployment and wait for it to stabilize
 	t.Log("")
@@ -92,7 +94,7 @@ func TestBackendReceivesDriftReports(t *testing.T) {
 		_ = clientset.AppsV1().Deployments(testNamespace).Delete(ctx, name, metav1.DeleteOptions{})
 	})
 
-	// Wait for stabilization
+	// Wait for stabilization (gen == obsGen)
 	ktesting.Eventually(t, func() (bool, string) {
 		dep, err := clientset.AppsV1().Deployments(testNamespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
@@ -106,37 +108,56 @@ func TestBackendReceivesDriftReports(t *testing.T) {
 		}
 		return true, "deployment stabilized"
 	}, defaultTimeout, defaultInterval, "deployment should stabilize")
-	t.Log("Deployment stabilized")
+	t.Log("Deployment stabilized (gen == obsGen)")
 
-	// Step 2: Update the deployment to trigger drift
+	// Step 2: Get the ReplicaSet owned by this Deployment
 	t.Log("")
-	t.Log("Step 2: Updating Deployment to trigger drift...")
-	dep, err := clientset.AppsV1().Deployments(testNamespace).Get(ctx, name, metav1.GetOptions{})
-	require.NoError(t, err)
-
-	dep.Spec.Template.Spec.Containers[0].Image = "nginx:1.25-alpine"
-	_, err = clientset.AppsV1().Deployments(testNamespace).Update(ctx, dep, metav1.UpdateOptions{})
-	require.NoError(t, err)
-	t.Log("Deployment updated - this should trigger drift detection on the new ReplicaSet")
-
-	// Wait for rollout to complete
+	t.Log("Step 2: Getting the ReplicaSet...")
+	var rs *appsv1.ReplicaSet
 	ktesting.Eventually(t, func() (bool, string) {
-		dep, err := clientset.AppsV1().Deployments(testNamespace).Get(ctx, name, metav1.GetOptions{})
+		rsList, err := clientset.AppsV1().ReplicaSets(testNamespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("app=%s", name),
+		})
 		if err != nil {
-			return false, fmt.Sprintf("error getting deployment: %v", err)
+			return false, fmt.Sprintf("error listing replicasets: %v", err)
 		}
-		if dep.Status.ObservedGeneration != dep.Generation {
-			return false, "rollout in progress"
+		if len(rsList.Items) == 0 {
+			return false, "no replicaset found"
 		}
-		if dep.Status.AvailableReplicas != *dep.Spec.Replicas {
-			return false, fmt.Sprintf("not available: available=%d, desired=%d", dep.Status.AvailableReplicas, *dep.Spec.Replicas)
-		}
-		return true, "rollout complete"
-	}, defaultTimeout, defaultInterval, "rollout should complete")
+		rs = &rsList.Items[0]
+		return true, fmt.Sprintf("found replicaset %s", rs.Name)
+	}, defaultTimeout, defaultInterval, "replicaset should exist")
+	t.Logf("Found ReplicaSet %s", rs.Name)
 
-	// Step 3: Check backend logs for DriftReport
+	// Step 3: Directly modify the ReplicaSet to trigger drift
+	// Change replicas from 1 to 2 - the Deployment controller will correct it back to 1
 	t.Log("")
-	t.Log("Step 3: Checking backend logs for DriftReport...")
+	t.Log("Step 3: Modifying ReplicaSet directly (this is an external change)...")
+	rs.Spec.Replicas = ptr(int32(2))
+	_, err = clientset.AppsV1().ReplicaSets(testNamespace).Update(ctx, rs, metav1.UpdateOptions{
+		FieldManager: "e2e-test",
+	})
+	require.NoError(t, err)
+	t.Log("ReplicaSet replicas changed from 1 to 2 - controller will correct this (drift)")
+
+	// Step 4: Wait for the controller to correct it (this correction is drift)
+	t.Log("")
+	t.Log("Step 4: Waiting for Deployment controller to correct the drift...")
+	ktesting.Eventually(t, func() (bool, string) {
+		rs, err := clientset.AppsV1().ReplicaSets(testNamespace).Get(ctx, rs.Name, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Sprintf("error getting replicaset: %v", err)
+		}
+		if *rs.Spec.Replicas != 1 {
+			return false, fmt.Sprintf("replicas=%d, waiting for controller to correct to 1", *rs.Spec.Replicas)
+		}
+		return true, "controller corrected replicas back to 1"
+	}, defaultTimeout, defaultInterval, "controller should correct drift")
+	t.Log("Controller corrected the ReplicaSet - this was drift")
+
+	// Step 5: Check backend logs for DriftReport
+	t.Log("")
+	t.Log("Step 5: Checking backend logs for DriftReport...")
 
 	ktesting.Eventually(t, func() (bool, string) {
 		pods, err := clientset.CoreV1().Pods(kausalityNS).List(ctx, metav1.ListOptions{
@@ -162,11 +183,11 @@ func TestBackendReceivesDriftReports(t *testing.T) {
 		logStr := string(logs)
 
 		// Check for DriftReport markers in the logs
-		if !contains(logStr, "apiVersion: kausality.io") && !contains(logStr, "kind: DriftReport") {
+		if !contains(logStr, "kind: DriftReport") {
 			return false, "no DriftReport found in backend logs yet"
 		}
 
-		// Check for the specific deployment name or phase
+		// Check for Detected or Resolved phase
 		if !contains(logStr, "phase: Detected") && !contains(logStr, "phase: Resolved") {
 			return false, "DriftReport found but no phase detected"
 		}
