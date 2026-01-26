@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Approval represents an approval for a child resource mutation.
@@ -55,7 +57,7 @@ type Freeze struct {
 	// Message explaining why the freeze was applied.
 	Message string `json:"message,omitempty"`
 	// At is when the freeze was applied.
-	At time.Time `json:"at,omitempty"`
+	At metav1.Time `json:"at,omitempty"`
 }
 
 // Snooze represents a snooze period on a parent resource.
@@ -63,7 +65,7 @@ type Freeze struct {
 // Stored in parent's kausality.io/snooze annotation as JSON.
 type Snooze struct {
 	// Expiry is when the snooze expires.
-	Expiry time.Time `json:"expiry"`
+	Expiry metav1.Time `json:"expiry"`
 	// User who applied the snooze.
 	User string `json:"user,omitempty"`
 	// Message explaining why the snooze was applied.
@@ -218,7 +220,7 @@ func ParseSnooze(annotationValue string) (*Snooze, error) {
 
 	// Support legacy format: plain RFC3339 timestamp
 	if t, err := time.Parse(time.RFC3339, annotationValue); err == nil {
-		return &Snooze{Expiry: t}, nil
+		return &Snooze{Expiry: metav1.Time{Time: t}}, nil
 	}
 
 	var snooze Snooze
@@ -245,7 +247,7 @@ func (s *Snooze) IsActive() bool {
 	if s == nil {
 		return false
 	}
-	return time.Now().Before(s.Expiry)
+	return time.Now().Before(s.Expiry.Time)
 }
 
 // String returns a human-readable description of the snooze.

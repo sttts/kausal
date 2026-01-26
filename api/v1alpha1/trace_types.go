@@ -2,7 +2,8 @@ package v1alpha1
 
 import (
 	"encoding/json"
-	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Trace represents the causal chain of mutations through a resource hierarchy.
@@ -24,7 +25,7 @@ type Hop struct {
 	// RequestUID is the unique identifier of the admission request that caused this mutation.
 	RequestUID string `json:"requestUID,omitempty"`
 	// Timestamp of the mutation.
-	Timestamp time.Time `json:"timestamp"`
+	Timestamp metav1.Time `json:"timestamp"`
 	// Labels contains custom metadata from kausality.io/trace-* annotations.
 	// For example, "kausality.io/trace-ticket=JIRA-123" becomes Labels["ticket"]="JIRA-123".
 	// Each hop captures labels from its own object; labels are not inherited from parent.
@@ -90,7 +91,7 @@ func NewHop(apiVersion, kind, name string, generation int64, user, requestUID st
 		Generation: generation,
 		User:       user,
 		RequestUID: requestUID,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  metav1.Now(),
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestApproval_Matches(t *testing.T) {
@@ -455,12 +457,12 @@ func TestSnooze_IsActive(t *testing.T) {
 		},
 		{
 			name:   "expired snooze",
-			snooze: &Snooze{Expiry: time.Now().Add(-1 * time.Hour)},
+			snooze: &Snooze{Expiry: metav1.Time{Time: time.Now().Add(-1 * time.Hour)}},
 			want:   false,
 		},
 		{
 			name:   "active snooze",
-			snooze: &Snooze{Expiry: time.Now().Add(1 * time.Hour)},
+			snooze: &Snooze{Expiry: metav1.Time{Time: time.Now().Add(1 * time.Hour)}},
 			want:   true,
 		},
 	}

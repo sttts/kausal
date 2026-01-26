@@ -180,7 +180,7 @@ func TestActionApplier_ApplySnooze(t *testing.T) {
 
 	// Snooze expiry should be approximately 1 hour from now
 	assert.True(t, snooze.Expiry.After(before.Add(59*time.Minute)))
-	assert.True(t, snooze.Expiry.Before(after.Add(61*time.Minute)))
+	assert.True(t, snooze.Expiry.Time.Before(after.Add(61*time.Minute)))
 }
 
 func TestActionApplier_RemoveApproval(t *testing.T) {

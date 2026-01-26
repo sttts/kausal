@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -148,7 +149,7 @@ func (a *ActionApplier) ApplySnooze(ctx context.Context, parent ObjectRef, durat
 
 	// Create snooze with structured data
 	snooze := &Snooze{
-		Expiry:  time.Now().Add(duration).UTC(),
+		Expiry:  metav1.Time{Time: time.Now().Add(duration).UTC()},
 		User:    user,
 		Message: message,
 	}
@@ -184,7 +185,7 @@ func (a *ActionApplier) ApplyFreeze(ctx context.Context, parent ObjectRef, user,
 	freeze := &Freeze{
 		User:    user,
 		Message: message,
-		At:      time.Now().UTC(),
+		At:      metav1.Time{Time: time.Now().UTC()},
 	}
 	freezeValue, err := MarshalFreeze(freeze)
 	if err != nil {

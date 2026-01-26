@@ -9,6 +9,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestTrace_Parse(t *testing.T) {
@@ -69,7 +71,7 @@ func TestTrace_Parse(t *testing.T) {
 }
 
 func TestTrace_String(t *testing.T) {
-	ts := time.Date(2026, 1, 24, 10, 30, 0, 0, time.UTC)
+	ts := metav1.Time{Time: time.Date(2026, 1, 24, 10, 30, 0, 0, time.UTC)}
 
 	trace := Trace{
 		{APIVersion: "apps/v1", Kind: "Deployment", Name: "test", Generation: 5, User: "hans@example.com", Timestamp: ts},
@@ -248,7 +250,7 @@ func TestNewHopWithLabels_EmptyLabels(t *testing.T) {
 }
 
 func TestHopWithLabels_JSON(t *testing.T) {
-	ts := time.Date(2026, 1, 24, 10, 30, 0, 0, time.UTC)
+	ts := metav1.Time{Time: time.Date(2026, 1, 24, 10, 30, 0, 0, time.UTC)}
 	hop := Hop{
 		APIVersion: "apps/v1",
 		Kind:       "Deployment",
@@ -269,7 +271,7 @@ func TestHopWithLabels_JSON(t *testing.T) {
 }
 
 func TestHopWithoutLabels_JSON(t *testing.T) {
-	ts := time.Date(2026, 1, 24, 10, 30, 0, 0, time.UTC)
+	ts := metav1.Time{Time: time.Date(2026, 1, 24, 10, 30, 0, 0, time.UTC)}
 	hop := Hop{
 		APIVersion: "apps/v1",
 		Kind:       "Deployment",
