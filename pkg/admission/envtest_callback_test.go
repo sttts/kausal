@@ -28,7 +28,7 @@ import (
 	"github.com/kausality-io/kausality/pkg/callback"
 	"github.com/kausality-io/kausality/pkg/callback/v1alpha1"
 	"github.com/kausality-io/kausality/pkg/config"
-	"github.com/kausality-io/kausality/pkg/drift"
+	"github.com/kausality-io/kausality/pkg/controller"
 )
 
 func TestCallback_DriftReportSentOnDetection(t *testing.T) {
@@ -241,7 +241,7 @@ func TestCallback_ResolvedSentOnApproval(t *testing.T) {
 		annotations = make(map[string]string)
 	}
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)

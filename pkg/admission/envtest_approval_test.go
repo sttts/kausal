@@ -22,7 +22,7 @@ import (
 	kadmission "github.com/kausality-io/kausality/pkg/admission"
 	"github.com/kausality-io/kausality/pkg/approval"
 	"github.com/kausality-io/kausality/pkg/config"
-	"github.com/kausality-io/kausality/pkg/drift"
+	"github.com/kausality-io/kausality/pkg/controller"
 )
 
 func TestApproval_ModeAlways(t *testing.T) {
@@ -456,7 +456,7 @@ func TestApprovalConsumed_ModeOnce(t *testing.T) {
 		annotations = make(map[string]string)
 	}
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with approval: %v", err)

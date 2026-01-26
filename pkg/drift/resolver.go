@@ -84,12 +84,12 @@ func extractParentState(parent *unstructured.Unstructured, ownerRef metav1.Owner
 		}
 
 		// Extract conditions for lifecycle detection
-		state.Conditions = extractConditions(status)
+		state.Conditions = ExtractConditions(status)
 
 		// Fallback: if no status.observedGeneration, check Synced/Ready conditions
 		// This supports Crossplane which stores observedGeneration in conditions
 		if !state.HasObservedGeneration {
-			state.ObservedGeneration, state.HasObservedGeneration = extractConditionObservedGeneration(status)
+			state.ObservedGeneration, state.HasObservedGeneration = ExtractConditionObservedGeneration(status)
 		}
 	}
 
@@ -101,8 +101,8 @@ func extractParentState(parent *unstructured.Unstructured, ownerRef metav1.Owner
 	// Check annotations
 	if annotations := parent.GetAnnotations(); annotations != nil {
 		// Read phase annotation
-		state.PhaseFromAnnotation = annotations[PhaseAnnotation]
-		if state.PhaseFromAnnotation == PhaseValueInitialized {
+		state.PhaseFromAnnotation = annotations[controller.PhaseAnnotation]
+		if state.PhaseFromAnnotation == controller.PhaseValueInitialized {
 			state.IsInitialized = true
 		}
 
@@ -115,10 +115,10 @@ func extractParentState(parent *unstructured.Unstructured, ownerRef metav1.Owner
 	return state
 }
 
-// extractConditionObservedGeneration extracts observedGeneration from Synced or Ready conditions.
+// ExtractConditionObservedGeneration extracts observedGeneration from Synced or Ready conditions.
 // Returns the observedGeneration and whether it was found.
 // Prefers Synced condition, falls back to Ready.
-func extractConditionObservedGeneration(status map[string]interface{}) (int64, bool) {
+func ExtractConditionObservedGeneration(status map[string]interface{}) (int64, bool) {
 	conditionsRaw, ok, _ := unstructured.NestedSlice(status, "conditions")
 	if !ok {
 		return 0, false
@@ -150,8 +150,8 @@ func extractConditionObservedGeneration(status map[string]interface{}) (int64, b
 	return readyObsGen, foundReady
 }
 
-// extractConditions extracts metav1.Condition list from status map.
-func extractConditions(status map[string]interface{}) []metav1.Condition {
+// ExtractConditions extracts metav1.Condition list from status map.
+func ExtractConditions(status map[string]interface{}) []metav1.Condition {
 	conditionsRaw, ok, _ := unstructured.NestedSlice(status, "conditions")
 	if !ok {
 		return nil

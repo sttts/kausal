@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/kausality-io/kausality/pkg/controller"
 	"github.com/kausality-io/kausality/pkg/drift"
 )
 
@@ -362,7 +363,7 @@ func TestMultipleOwnerRefs_OnlyControllerMatters(t *testing.T) {
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	controllerDeploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, controllerDeploy); err != nil {
 		t.Fatalf("failed to update controller annotations: %v", err)
@@ -475,7 +476,7 @@ func TestLifecyclePhase_InitializedAnnotation(t *testing.T) {
 
 	// Set the kausality.io/phase annotation (simulating previous webhook setting it)
 	deploy.SetAnnotations(map[string]string{
-		drift.PhaseAnnotation: drift.PhaseValueInitialized,
+		controller.PhaseAnnotation: controller.PhaseValueInitialized,
 	})
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)

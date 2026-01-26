@@ -10,6 +10,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/kausality-io/kausality/pkg/controller"
 )
 
 func TestFindControllerOwnerRef(t *testing.T) {
@@ -192,7 +194,7 @@ func TestExtractParentState(t *testing.T) {
 						"namespace":  "default",
 						"generation": int64(1),
 						"annotations": map[string]interface{}{
-							PhaseAnnotation: PhaseValueInitialized,
+							controller.PhaseAnnotation: controller.PhaseValueInitialized,
 						},
 					},
 				},
@@ -294,7 +296,7 @@ func TestExtractConditions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			conditions := extractConditions(tt.status)
+			conditions := ExtractConditions(tt.status)
 			assert.Len(t, conditions, tt.wantCount)
 			for i, wantType := range tt.wantTypes {
 				if i < len(conditions) {
@@ -448,7 +450,7 @@ func TestExtractConditionObservedGeneration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			obsG, found := extractConditionObservedGeneration(tt.status)
+			obsG, found := ExtractConditionObservedGeneration(tt.status)
 			assert.Equal(t, tt.wantObsG, obsG, "observedGeneration")
 			assert.Equal(t, tt.wantFound, found, "found")
 		})

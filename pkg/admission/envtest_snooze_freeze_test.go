@@ -27,7 +27,7 @@ import (
 	"github.com/kausality-io/kausality/pkg/callback"
 	"github.com/kausality-io/kausality/pkg/callback/v1alpha1"
 	"github.com/kausality-io/kausality/pkg/config"
-	"github.com/kausality-io/kausality/pkg/drift"
+	"github.com/kausality-io/kausality/pkg/controller"
 )
 
 // =============================================================================
@@ -75,7 +75,7 @@ func TestSnooze_SuppressesCallbackWhenActive(t *testing.T) {
 	}
 	snoozeUntil := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
 	annotations[approval.SnoozeAnnotation] = snoozeUntil
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
@@ -222,7 +222,7 @@ func TestSnooze_ExpiredDoesNotSuppressCallback(t *testing.T) {
 	}
 	expiredSnooze := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
 	annotations[approval.SnoozeAnnotation] = expiredSnooze
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
@@ -712,7 +712,7 @@ func TestSnooze_StructuredAnnotation(t *testing.T) {
 	snoozeExpiry := time.Now().Add(1 * time.Hour).UTC()
 	snoozeJSON := fmt.Sprintf(`{"expiry":%q,"user":"ops@example.com","message":"deploying hotfix v1.2.3"}`, snoozeExpiry.Format(time.RFC3339))
 	annotations[approval.SnoozeAnnotation] = snoozeJSON
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)

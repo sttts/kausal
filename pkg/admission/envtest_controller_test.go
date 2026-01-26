@@ -100,7 +100,7 @@ func TestControllerIdentification_MultipleUpdatersIntersection(t *testing.T) {
 			annotations = make(map[string]string)
 		}
 		annotations[controller.ControllersAnnotation] = controllerHash
-		annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+		annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 		deploy.SetAnnotations(annotations)
 		return k8sClient.Update(ctx, deploy)
 	})
@@ -176,7 +176,7 @@ func TestControllerIdentification_CantDetermine(t *testing.T) {
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	require.NoError(t, k8sClient.Update(ctx, deploy))
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
@@ -365,7 +365,7 @@ func TestControllerIdentification_FullFlow(t *testing.T) {
 			annotations = make(map[string]string)
 		}
 		annotations[controller.ControllersAnnotation] = controllerHash
-		annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+		annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 		deploy.SetAnnotations(annotations)
 		return k8sClient.Update(ctx, deploy)
 	})

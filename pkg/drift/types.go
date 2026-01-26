@@ -77,16 +77,6 @@ const (
 	PhaseDeleting LifecyclePhase = "Deleting"
 )
 
-// PhaseAnnotation stores the lifecycle phase of a parent resource.
-const PhaseAnnotation = "kausality.io/phase"
-
-// Phase values for the PhaseAnnotation.
-const (
-	PhaseValueInitializing = "initializing"
-	PhaseValueInitialized  = "initialized"
-	// PhaseDeleting is not stored - derived from deletionTimestamp
-)
-
 // Condition types used for initialization and observedGeneration detection.
 const (
 	ConditionTypeInitialized = "Initialized"

@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/kausality-io/kausality/pkg/drift"
+	"github.com/kausality-io/kausality/pkg/controller"
 )
 
 // =============================================================================
@@ -86,7 +86,7 @@ func markParentStable(t *testing.T, ctx context.Context, deploy *appsv1.Deployme
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment annotations: %v", err)

@@ -25,7 +25,7 @@ import (
 	kadmission "github.com/kausality-io/kausality/pkg/admission"
 	"github.com/kausality-io/kausality/pkg/approval"
 	"github.com/kausality-io/kausality/pkg/config"
-	"github.com/kausality-io/kausality/pkg/drift"
+	"github.com/kausality-io/kausality/pkg/controller"
 )
 
 func TestEnforceMode_RejectionDenied(t *testing.T) {
@@ -50,7 +50,7 @@ func TestEnforceMode_RejectionDenied(t *testing.T) {
 		annotations = make(map[string]string)
 	}
 	annotations[approval.RejectionsAnnotation] = string(rejectionsJSON)
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	if err := k8sClient.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
@@ -477,7 +477,7 @@ func TestEnforceMode_NamespaceList(t *testing.T) {
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	require.NoError(t, k8sClient.Update(ctx, deploy))
 
@@ -652,7 +652,7 @@ func TestEnforceMode_NamespaceSelector(t *testing.T) {
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	require.NoError(t, k8sClient.Update(ctx, deploy))
 
@@ -746,7 +746,7 @@ func TestEnforceMode_NamespaceSelector_NoMatch(t *testing.T) {
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	require.NoError(t, k8sClient.Update(ctx, deploy))
 
@@ -832,7 +832,7 @@ func TestEnforceMode_ObjectSelector(t *testing.T) {
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	require.NoError(t, k8sClient.Update(ctx, deploy))
 
@@ -914,7 +914,7 @@ func TestEnforceMode_ObjectSelector_NoMatch(t *testing.T) {
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[drift.PhaseAnnotation] = drift.PhaseValueInitialized
+	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
 	require.NoError(t, k8sClient.Update(ctx, deploy))
 
