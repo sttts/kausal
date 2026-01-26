@@ -73,6 +73,12 @@ jobs:
         with:
           version: v2.8.0
 
+      - name: golangci-lint example-generic-control-plane
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.8.0
+          working-directory: cmd/example-generic-control-plane
+
   helm:
     name: Helm Lint
     runs-on: ubuntu-latest

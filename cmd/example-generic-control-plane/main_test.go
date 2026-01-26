@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -32,8 +33,8 @@ func TestKausalityAdmission(t *testing.T) {
 
 	// Create a fake client with the default namespace
 	scheme := runtime.NewScheme()
-	corev1.AddToScheme(scheme)
-	examplev1alpha1.AddToScheme(scheme)
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, examplev1alpha1.AddToScheme(scheme))
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(&corev1.Namespace{

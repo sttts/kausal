@@ -56,14 +56,17 @@ envtest: setup-envtest ## Run envtest integration tests.
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter.
 	$(GOLANGCI_LINT) run
+	cd cmd/example-generic-control-plane && $(GOLANGCI_LINT) run
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
 	$(GOLANGCI_LINT) run --fix
+	cd cmd/example-generic-control-plane && $(GOLANGCI_LINT) run --fix
 
 .PHONY: imports
 imports: goimports ## Fix imports in Go files.
 	$(GOIMPORTS) -w .
+	cd cmd/example-generic-control-plane && $(GOIMPORTS) -w .
 
 ##@ Build
 

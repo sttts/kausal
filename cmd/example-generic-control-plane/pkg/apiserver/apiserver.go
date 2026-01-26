@@ -7,9 +7,11 @@ import (
 	"net"
 
 	"github.com/go-logr/logr"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/endpoints/openapi"
@@ -21,8 +23,8 @@ import (
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	examplev1alpha1 "github.com/kausality-io/kausality/cmd/example-generic-control-plane/pkg/apis/example/v1alpha1"
 	kausalityAdmission "github.com/kausality-io/kausality/cmd/example-generic-control-plane/pkg/admission"
+	examplev1alpha1 "github.com/kausality-io/kausality/cmd/example-generic-control-plane/pkg/apis/example/v1alpha1"
 	"github.com/kausality-io/kausality/cmd/example-generic-control-plane/pkg/registry/example/widget"
 	"github.com/kausality-io/kausality/cmd/example-generic-control-plane/pkg/registry/example/widgetset"
 	"github.com/kausality-io/kausality/pkg/policy"
@@ -36,8 +38,7 @@ var (
 )
 
 func init() {
-	// Register example types
-	examplev1alpha1.AddToScheme(Scheme)
+	utilruntime.Must(examplev1alpha1.AddToScheme(Scheme))
 }
 
 // Config holds the configuration for the API server.
@@ -87,11 +88,11 @@ func New(cfg Config) (*Server, error) {
 	secureServing.Listener = listener
 	secureServing.ServerCert.GeneratedCert = nil // Will generate self-signed
 	if err := secureServing.MaybeDefaultWithSelfSignedCerts("localhost", nil, []net.IP{net.ParseIP("127.0.0.1")}); err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return nil, fmt.Errorf("failed to configure self-signed certs: %w", err)
 	}
-	if err := secureServing.ApplyTo(&genericConfig.Config.SecureServing); err != nil {
-		listener.Close()
+	if err := secureServing.ApplyTo(&genericConfig.SecureServing); err != nil {
+		_ = listener.Close()
 		return nil, fmt.Errorf("failed to apply secure serving: %w", err)
 	}
 
@@ -112,28 +113,28 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	// Set up OpenAPI
-	genericConfig.Config.OpenAPIConfig = genericapiserver.DefaultOpenAPIConfig(nil, openapi.NewDefinitionNamer(Scheme))
-	genericConfig.Config.OpenAPIConfig.Info.Title = "Example Generic Control Plane"
-	genericConfig.Config.OpenAPIConfig.Info.Version = "v1alpha1"
+	genericConfig.OpenAPIConfig = genericapiserver.DefaultOpenAPIConfig(nil, openapi.NewDefinitionNamer(Scheme))
+	genericConfig.OpenAPIConfig.Info.Title = "Example Generic Control Plane"
+	genericConfig.OpenAPIConfig.Info.Version = "v1alpha1"
 
 	// Create kausality admission plugin
 	kausalityPlugin := kausalityAdmission.NewKausalityAdmission(cfg.Client, cfg.Log, cfg.PolicyResolver)
 	kausalityPlugin.SetScheme(Scheme)
 
 	// Set up admission chain
-	genericConfig.Config.AdmissionControl = admission.NewChainHandler(kausalityPlugin)
+	genericConfig.AdmissionControl = admission.NewChainHandler(kausalityPlugin)
 
 	// Create the server
 	completedConfig := genericConfig.Complete()
 	genericServer, err := completedConfig.New("example-apiserver", genericapiserver.NewEmptyDelegate())
 	if err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return nil, fmt.Errorf("failed to create generic server: %w", err)
 	}
 
 	// Install API group
 	if err := installAPIGroup(genericServer, completedConfig.RESTOptionsGetter); err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return nil, fmt.Errorf("failed to install API group: %w", err)
 	}
 
@@ -156,16 +157,13 @@ func installAPIGroup(s *genericapiserver.GenericAPIServer, restOptionsGetter gen
 	widgetStrategy := widget.NewStrategy(Scheme)
 	widgetStore := &genericregistry.Store{
 		NewFunc:                   func() runtime.Object { return &examplev1alpha1.Widget{} },
-		NewListFunc:              func() runtime.Object { return &examplev1alpha1.WidgetList{} },
-		DefaultQualifiedResource: examplev1alpha1.Resource("widgets"),
-		SingularQualifiedResource: schema.GroupResource{
-			Group:    examplev1alpha1.GroupVersion.Group,
-			Resource: "widget",
-		},
-		CreateStrategy: widgetStrategy,
-		UpdateStrategy: widgetStrategy,
-		DeleteStrategy: widgetStrategy,
-		TableConvertor: rest.NewDefaultTableConvertor(examplev1alpha1.Resource("widgets")),
+		NewListFunc:               func() runtime.Object { return &examplev1alpha1.WidgetList{} },
+		DefaultQualifiedResource:  examplev1alpha1.Resource("widgets"),
+		SingularQualifiedResource: schema.GroupResource{Group: examplev1alpha1.GroupVersion.Group, Resource: "widget"},
+		CreateStrategy:            widgetStrategy,
+		UpdateStrategy:            widgetStrategy,
+		DeleteStrategy:            widgetStrategy,
+		TableConvertor:            rest.NewDefaultTableConvertor(examplev1alpha1.Resource("widgets")),
 	}
 	widgetOpts, err := restOptionsGetter.GetRESTOptions(examplev1alpha1.Resource("widgets"), nil)
 	if err != nil {
@@ -183,16 +181,13 @@ func installAPIGroup(s *genericapiserver.GenericAPIServer, restOptionsGetter gen
 	widgetSetStatusStrategy := widgetset.NewStatusStrategy(widgetSetStrategy)
 	widgetSetStore := &genericregistry.Store{
 		NewFunc:                   func() runtime.Object { return &examplev1alpha1.WidgetSet{} },
-		NewListFunc:              func() runtime.Object { return &examplev1alpha1.WidgetSetList{} },
-		DefaultQualifiedResource: examplev1alpha1.Resource("widgetsets"),
-		SingularQualifiedResource: schema.GroupResource{
-			Group:    examplev1alpha1.GroupVersion.Group,
-			Resource: "widgetset",
-		},
-		CreateStrategy: widgetSetStrategy,
-		UpdateStrategy: widgetSetStrategy,
-		DeleteStrategy: widgetSetStrategy,
-		TableConvertor: rest.NewDefaultTableConvertor(examplev1alpha1.Resource("widgetsets")),
+		NewListFunc:               func() runtime.Object { return &examplev1alpha1.WidgetSetList{} },
+		DefaultQualifiedResource:  examplev1alpha1.Resource("widgetsets"),
+		SingularQualifiedResource: schema.GroupResource{Group: examplev1alpha1.GroupVersion.Group, Resource: "widgetset"},
+		CreateStrategy:            widgetSetStrategy,
+		UpdateStrategy:            widgetSetStrategy,
+		DeleteStrategy:            widgetSetStrategy,
+		TableConvertor:            rest.NewDefaultTableConvertor(examplev1alpha1.Resource("widgetsets")),
 	}
 	widgetSetOpts, err := restOptionsGetter.GetRESTOptions(examplev1alpha1.Resource("widgetsets"), nil)
 	if err != nil {
