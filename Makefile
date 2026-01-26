@@ -130,6 +130,7 @@ install-e2e: helm ## Install kausality for E2E tests. Requires WEBHOOK_IMAGE and
 		--set image.repository="$${WEBHOOK_IMAGE%:*}" \
 		--set image.tag="$${WEBHOOK_IMAGE##*:}" \
 		--set image.pullPolicy=Never \
+		--set controller.enabled=false \
 		--set backend.enabled=true \
 		--set backend.image.repository="$${BACKEND_IMAGE%:*}" \
 		--set backend.image.tag="$${BACKEND_IMAGE##*:}" \
@@ -138,8 +139,8 @@ install-e2e: helm ## Install kausality for E2E tests. Requires WEBHOOK_IMAGE and
 		--set certificates.selfSigned.enabled=true \
 		--set logging.development=true \
 		--wait --timeout 180s
-	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality -n kausality-system --timeout=180s
-	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-backend -n kausality-system --timeout=180s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-webhook -n kausality-system --timeout=180s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-backend-log -n kausality-system --timeout=180s
 	kubectl apply -f test/e2e/kubernetes/kausality-policy.yaml
 
 .PHONY: install-e2e-crossplane
@@ -151,6 +152,7 @@ install-e2e-crossplane: helm ## Install kausality for Crossplane E2E tests. Requ
 		--set image.repository="$${WEBHOOK_IMAGE%:*}" \
 		--set image.tag="$${WEBHOOK_IMAGE##*:}" \
 		--set image.pullPolicy=Never \
+		--set controller.enabled=false \
 		--set backend.enabled=true \
 		--set backend.image.repository="$${BACKEND_IMAGE%:*}" \
 		--set backend.image.tag="$${BACKEND_IMAGE##*:}" \
@@ -159,8 +161,8 @@ install-e2e-crossplane: helm ## Install kausality for Crossplane E2E tests. Requ
 		--set certificates.selfSigned.enabled=true \
 		--set logging.development=true \
 		--wait --timeout 300s
-	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality -n kausality-system --timeout=180s
-	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-backend -n kausality-system --timeout=180s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-webhook -n kausality-system --timeout=180s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-backend-log -n kausality-system --timeout=180s
 	kubectl apply -f test/e2e/crossplane/kausality-policy.yaml
 
 ##@ Deployment
