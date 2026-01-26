@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "kausality.fullname" . }}
+  name: {{ include "kausality.webhookFullname" . }}
   labels:
     {{- include "kausality.labels" . | nindent 4 }}
 rules:

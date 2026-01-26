@@ -2,13 +2,13 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "kausality.fullname" . }}
+  name: {{ include "kausality.webhookFullname" . }}
   labels:
     {{- include "kausality.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "kausality.fullname" . }}
+  name: {{ include "kausality.webhookFullname" . }}
 subjects:
   - kind: ServiceAccount
     name: {{ include "kausality.serviceAccountName" . }}
@@ -18,13 +18,13 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "kausality.fullname" . }}-resource-access
+  name: {{ include "kausality.webhookFullname" . }}-resources
   labels:
     {{- include "kausality.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "kausality.fullname" . }}-resource-access
+  name: {{ include "kausality.webhookFullname" . }}-resources
 subjects:
   - kind: ServiceAccount
     name: {{ include "kausality.serviceAccountName" . }}

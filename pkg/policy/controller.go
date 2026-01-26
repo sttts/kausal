@@ -36,8 +36,8 @@ const (
 	ConditionTypeWebhookConfigured = "WebhookConfigured"
 
 	// AggregationLabel is the label used for RBAC aggregation.
-	// ClusterRoles with this label are aggregated into the main resource-access role.
-	AggregationLabel = "kausality.io/aggregate-to-resource-access"
+	// ClusterRoles with this label are aggregated into the webhook-resources role.
+	AggregationLabel = "kausality.io/aggregate-to-webhook-resources"
 
 	// ClusterRolePrefix is the prefix for generated per-policy ClusterRoles.
 	ClusterRolePrefix = "kausality-policy-"

@@ -60,10 +60,17 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
+Webhook fullname (for ClusterRole naming)
+*/}}
+{{- define "kausality.webhookFullname" -}}
+{{- printf "%s-webhook" (include "kausality.fullname" .) }}
+{{- end }}
+
+{{/*
 Create the webhook service name
 */}}
 {{- define "kausality.webhookServiceName" -}}
-{{- printf "%s-webhook" (include "kausality.fullname" .) }}
+{{- include "kausality.webhookFullname" . }}
 {{- end }}
 
 {{/*
