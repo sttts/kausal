@@ -71,7 +71,7 @@ func TestPolicyCrossplaneEnforceMode(t *testing.T) {
 
 	t.Logf("Created Kausality policy %s with enforce mode (explicit resources for higher specificity)", policyName)
 
-	// Wait for policy to be ready
+	// Wait for policy to be ready (controller sets this condition)
 	t.Log("")
 	t.Log("Step 2: Waiting for policy to be ready...")
 

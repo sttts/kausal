@@ -140,10 +140,13 @@ jobs:
         run: |
           export KO_DOCKER_REPO=ko.local
           WEBHOOK_IMAGE=$(ko build --bare ./cmd/kausality-webhook)
+          CONTROLLER_IMAGE=$(ko build --bare ./cmd/kausality-controller)
           BACKEND_IMAGE=$(ko build --bare ./cmd/kausality-backend-log)
           kind load docker-image "$WEBHOOK_IMAGE" --name ${{ matrix.cluster }}
+          kind load docker-image "$CONTROLLER_IMAGE" --name ${{ matrix.cluster }}
           kind load docker-image "$BACKEND_IMAGE" --name ${{ matrix.cluster }}
           echo "WEBHOOK_IMAGE=$WEBHOOK_IMAGE" >> $GITHUB_ENV
+          echo "CONTROLLER_IMAGE=$CONTROLLER_IMAGE" >> $GITHUB_ENV
           echo "BACKEND_IMAGE=$BACKEND_IMAGE" >> $GITHUB_ENV
 
       - name: Install third-party dependencies

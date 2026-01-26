@@ -122,15 +122,18 @@ install-crossplane: ## Install Crossplane, provider-nop, and function on current
 	./test/e2e/crossplane/install-deps.sh
 
 .PHONY: install-e2e
-install-e2e: helm ## Install kausality for E2E tests. Requires WEBHOOK_IMAGE and BACKEND_IMAGE.
+install-e2e: helm ## Install kausality for E2E tests. Requires WEBHOOK_IMAGE, CONTROLLER_IMAGE, and BACKEND_IMAGE.
 	@test -n "$${WEBHOOK_IMAGE}" || { echo "WEBHOOK_IMAGE is required"; exit 1; }
+	@test -n "$${CONTROLLER_IMAGE}" || { echo "CONTROLLER_IMAGE is required"; exit 1; }
 	@test -n "$${BACKEND_IMAGE}" || { echo "BACKEND_IMAGE is required"; exit 1; }
 	$(HELM) upgrade --install kausality ./charts/kausality \
 		--namespace kausality-system --create-namespace \
 		--set image.repository="$${WEBHOOK_IMAGE%:*}" \
 		--set image.tag="$${WEBHOOK_IMAGE##*:}" \
 		--set image.pullPolicy=Never \
-		--set controller.enabled=false \
+		--set controller.image.repository="$${CONTROLLER_IMAGE%:*}" \
+		--set controller.image.tag="$${CONTROLLER_IMAGE##*:}" \
+		--set controller.image.pullPolicy=Never \
 		--set backend.enabled=true \
 		--set backend.image.repository="$${BACKEND_IMAGE%:*}" \
 		--set backend.image.tag="$${BACKEND_IMAGE##*:}" \
@@ -140,19 +143,23 @@ install-e2e: helm ## Install kausality for E2E tests. Requires WEBHOOK_IMAGE and
 		--set logging.development=true \
 		--wait --timeout 180s
 	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-webhook -n kausality-system --timeout=180s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-controller -n kausality-system --timeout=180s
 	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-backend-log -n kausality-system --timeout=180s
 	kubectl apply -f test/e2e/kubernetes/kausality-policy.yaml
 
 .PHONY: install-e2e-crossplane
-install-e2e-crossplane: helm ## Install kausality for Crossplane E2E tests. Requires WEBHOOK_IMAGE and BACKEND_IMAGE.
+install-e2e-crossplane: helm ## Install kausality for Crossplane E2E tests. Requires WEBHOOK_IMAGE, CONTROLLER_IMAGE, and BACKEND_IMAGE.
 	@test -n "$${WEBHOOK_IMAGE}" || { echo "WEBHOOK_IMAGE is required"; exit 1; }
+	@test -n "$${CONTROLLER_IMAGE}" || { echo "CONTROLLER_IMAGE is required"; exit 1; }
 	@test -n "$${BACKEND_IMAGE}" || { echo "BACKEND_IMAGE is required"; exit 1; }
 	$(HELM) upgrade --install kausality ./charts/kausality \
 		--namespace kausality-system --create-namespace \
 		--set image.repository="$${WEBHOOK_IMAGE%:*}" \
 		--set image.tag="$${WEBHOOK_IMAGE##*:}" \
 		--set image.pullPolicy=Never \
-		--set controller.enabled=false \
+		--set controller.image.repository="$${CONTROLLER_IMAGE%:*}" \
+		--set controller.image.tag="$${CONTROLLER_IMAGE##*:}" \
+		--set controller.image.pullPolicy=Never \
 		--set backend.enabled=true \
 		--set backend.image.repository="$${BACKEND_IMAGE%:*}" \
 		--set backend.image.tag="$${BACKEND_IMAGE##*:}" \
@@ -162,6 +169,7 @@ install-e2e-crossplane: helm ## Install kausality for Crossplane E2E tests. Requ
 		--set logging.development=true \
 		--wait --timeout 300s
 	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-webhook -n kausality-system --timeout=180s
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-controller -n kausality-system --timeout=180s
 	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kausality-backend-log -n kausality-system --timeout=180s
 	kubectl apply -f test/e2e/crossplane/kausality-policy.yaml
 
