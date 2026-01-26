@@ -1,3 +1,6 @@
+// Package v1alpha1 contains API types for kausality.io/v1alpha1.
+// +kubebuilder:object:generate=true
+// +groupName=kausality.io
 package v1alpha1
 
 import (
@@ -6,7 +9,7 @@ import (
 )
 
 var (
-	// GroupVersion is the API group and version for this package.
+	// GroupVersion is group version used to register these objects.
 	GroupVersion = schema.GroupVersion{Group: "kausality.io", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
