@@ -91,13 +91,13 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 			// Reconcile webhook to remove this policy's rules
 			if err := c.reconcileWebhook(ctx, log); err != nil {
-				return ctrl.Result{}, err
+				return requeueOnConflict(err)
 			}
 
 			// Remove finalizer
 			controllerutil.RemoveFinalizer(&policy, FinalizerName)
 			if err := c.Update(ctx, &policy); err != nil {
-				return ctrl.Result{}, err
+				return requeueOnConflict(err)
 			}
 		}
 		return ctrl.Result{}, nil
@@ -107,7 +107,7 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !controllerutil.ContainsFinalizer(&policy, FinalizerName) {
 		controllerutil.AddFinalizer(&policy, FinalizerName)
 		if err := c.Update(ctx, &policy); err != nil {
-			return ctrl.Result{}, err
+			return requeueOnConflict(err)
 		}
 	}
 
@@ -116,25 +116,41 @@ func (c *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		c.setCondition(&policy, ConditionTypeWebhookConfigured, metav1.ConditionFalse, "ReconcileFailed", err.Error())
 		c.setCondition(&policy, ConditionTypeReady, metav1.ConditionFalse, "WebhookNotConfigured", "Webhook configuration failed")
 		if statusErr := c.Status().Update(ctx, &policy); statusErr != nil {
-			log.Error(statusErr, "failed to update status")
+			if !apierrors.IsConflict(statusErr) {
+				log.Error(statusErr, "failed to update status")
+			}
 		}
-		return ctrl.Result{}, err
+		return requeueOnConflict(err)
 	}
 
 	// Reconcile RBAC for this policy
 	if err := c.reconcileClusterRole(ctx, log, &policy); err != nil {
-		log.Error(err, "failed to reconcile RBAC")
-		// Don't fail the whole reconciliation for RBAC errors
+		if !apierrors.IsConflict(err) {
+			log.Error(err, "failed to reconcile RBAC")
+		}
+		// Don't fail the whole reconciliation for RBAC errors, but requeue on conflict
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	// Update status
 	c.setCondition(&policy, ConditionTypeWebhookConfigured, metav1.ConditionTrue, "RulesApplied", "Webhook rules updated")
 	c.setCondition(&policy, ConditionTypeReady, metav1.ConditionTrue, "Reconciled", "Policy is active")
 	if err := c.Status().Update(ctx, &policy); err != nil {
-		return ctrl.Result{}, err
+		return requeueOnConflict(err)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// requeueOnConflict returns a requeue result without error for conflict errors,
+// allowing silent retry. Other errors are returned normally.
+func requeueOnConflict(err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{Requeue: true}, nil
+	}
+	return ctrl.Result{}, err
 }
 
 // reconcileWebhook updates the MutatingWebhookConfiguration based on all Kausality policies.
