@@ -32,11 +32,22 @@
 
 ## Why Kausality?
 
-Ever had your infrastructure change without anyone touching it? Controllers reconciling, external resources drifting, software updates causing unexpected mutations — Kausality catches these.
+We deployed a cluster with 1000 B200 GPU nodes. Burn-in was done carefully — nodes scaled up manually in the AWS console, slowly, deliberately, correctly. It worked.
 
-**The problem**: Kubernetes controllers constantly reconcile resources. When something external changes (cloud state, referenced configs, controller behavior), your resources change too — silently, without audit trail.
+A few days later, we deployed our controllers. One composition change removed an unrelated AWS add-on. That was enough. Terraform was triggered. Terraform reconciled the cluster. The desired state said: far fewer than 1000 nodes. Terraform did exactly what it was told.
 
-**The solution**: Kausality intercepts mutations and asks: "Did someone actually request this change, or is this drift?" If it's drift, you get notified (or can block it).
+**Reality had drifted. Intent had not been recorded.**
+
+The system had no concept of *why* the cluster looked the way it did — only what the declarative snapshot said. No bug. No outage. Just an expensive reminder.
+
+This is the class of failure Kausality is built to prevent.
+
+**Kausality captures causality, ownership, and intent:**
+- Which system is allowed to change what
+- Which changes imply reconciliation
+- Which state must never be "helpfully" converged away
+
+> If your infrastructure can't explain why something exists, eventually it will delete it.
 
 ## Quick Start
 
