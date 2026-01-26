@@ -35,27 +35,27 @@ func TestControllerIdentification_SingleUpdater(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "ctrl-single-deploy")
+	deploy := createDeploymentUnit(t, ctx, "ctrl-single-deploy")
 
 	// Mark parent as stable (initialized with matching observedGeneration)
-	markParentStable(t, ctx, deploy)
+	markParentStableUnit(t, ctx, deploy)
 
 	// Create child ReplicaSet with a single updater hash
-	rs := createReplicaSetWithOwner(t, ctx, "ctrl-single-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "ctrl-single-rs", deploy)
 
 	// Add a single updater annotation (simulating first CREATE)
 	user1 := "system:serviceaccount:kube-system:deployment-controller"
 	annotations := controller.RecordUpdater(rs, user1)
 	rs.SetAnnotations(annotations)
-	require.NoError(t, k8sClient.Update(ctx, rs))
+	require.NoError(t, k8sClientUnit.Update(ctx, rs))
 
 	// Re-fetch
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 
 	t.Logf("Child updaters annotation: %s", rs.Annotations[controller.UpdatersAnnotation])
 
 	// Detect drift with same user - should be identified as controller
-	detector := drift.NewDetector(k8sClient)
+	detector := drift.NewDetector(k8sClientUnit)
 	childUpdaters := drift.ParseUpdaterHashes(rs)
 	result, err := detector.Detect(ctx, rs, user1, childUpdaters)
 	require.NoError(t, err)
@@ -85,14 +85,14 @@ func TestControllerIdentification_MultipleUpdatersIntersection(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "ctrl-multi-deploy")
+	deploy := createDeploymentUnit(t, ctx, "ctrl-multi-deploy")
 
 	// Add controller hash to parent (simulating status update recording)
 	controllerUser := "system:serviceaccount:kube-system:deployment-controller"
 	controllerHash := controller.HashUsername(controllerUser)
 
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 			return err
 		}
 		annotations := deploy.GetAnnotations()
@@ -102,27 +102,27 @@ func TestControllerIdentification_MultipleUpdatersIntersection(t *testing.T) {
 		annotations[controller.ControllersAnnotation] = controllerHash
 		annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 		deploy.SetAnnotations(annotations)
-		return k8sClient.Update(ctx, deploy)
+		return k8sClientUnit.Update(ctx, deploy)
 	})
 	require.NoError(t, err)
 
 	// Re-fetch and set up parent as stable AFTER all annotation updates
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	t.Logf("Parent controllers annotation: %s", deploy.Annotations[controller.ControllersAnnotation])
 	t.Logf("Parent generation: %d, observedGeneration: %d", deploy.Generation, deploy.Status.ObservedGeneration)
 
 	// Create child with multiple updaters (controller + user)
-	rs := createReplicaSetWithOwner(t, ctx, "ctrl-multi-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "ctrl-multi-rs", deploy)
 
 	regularUser := "kubectl-user@example.com"
 	userHash := controller.HashUsername(regularUser)
 
 	// Set multiple updaters on child
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 			return err
 		}
 		annotations := rs.GetAnnotations()
@@ -131,16 +131,16 @@ func TestControllerIdentification_MultipleUpdatersIntersection(t *testing.T) {
 		}
 		annotations[controller.UpdatersAnnotation] = controllerHash + "," + userHash
 		rs.SetAnnotations(annotations)
-		return k8sClient.Update(ctx, rs)
+		return k8sClientUnit.Update(ctx, rs)
 	})
 	require.NoError(t, err)
 
 	// Re-fetch
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	t.Logf("Child updaters annotation: %s", rs.Annotations[controller.UpdatersAnnotation])
 
 	// Detect drift with controller user - intersection should identify as controller
-	detector := drift.NewDetector(k8sClient)
+	detector := drift.NewDetector(k8sClientUnit)
 	childUpdaters := drift.ParseUpdaterHashes(rs)
 
 	result, err := detector.Detect(ctx, rs, controllerUser, childUpdaters)
@@ -169,7 +169,7 @@ func TestControllerIdentification_CantDetermine(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment WITHOUT controllers annotation
-	deploy := createDeployment(t, ctx, "ctrl-unknown-deploy")
+	deploy := createDeploymentUnit(t, ctx, "ctrl-unknown-deploy")
 
 	// Mark as initialized (but NO controllers annotation)
 	annotations := deploy.GetAnnotations()
@@ -178,24 +178,24 @@ func TestControllerIdentification_CantDetermine(t *testing.T) {
 	}
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	require.NoError(t, k8sClient.Update(ctx, deploy))
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 
 	// Set up parent as stable
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 
 	// NO controllers annotation on parent
 
 	// Create child with MULTIPLE updaters
-	rs := createReplicaSetWithOwner(t, ctx, "ctrl-unknown-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "ctrl-unknown-rs", deploy)
 
 	user1Hash := controller.HashUsername("user1")
 	user2Hash := controller.HashUsername("user2")
 
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 			return err
 		}
 		annotations := rs.GetAnnotations()
@@ -204,16 +204,16 @@ func TestControllerIdentification_CantDetermine(t *testing.T) {
 		}
 		annotations[controller.UpdatersAnnotation] = user1Hash + "," + user2Hash
 		rs.SetAnnotations(annotations)
-		return k8sClient.Update(ctx, rs)
+		return k8sClientUnit.Update(ctx, rs)
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	t.Logf("Child updaters: %s", rs.Annotations[controller.UpdatersAnnotation])
 	t.Logf("Parent controllers: %s", deploy.Annotations[controller.ControllersAnnotation])
 
 	// Multiple updaters + no parent controllers = can't determine
-	detector := drift.NewDetector(k8sClient)
+	detector := drift.NewDetector(k8sClientUnit)
 	childUpdaters := drift.ParseUpdaterHashes(rs)
 
 	result, err := detector.Detect(ctx, rs, "user1", childUpdaters)
@@ -234,20 +234,20 @@ func TestControllerIdentification_CreateFirstUpdater(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "ctrl-create-deploy")
+	deploy := createDeploymentUnit(t, ctx, "ctrl-create-deploy")
 
 	// Mark parent as stable (initialized with matching observedGeneration)
-	markParentStable(t, ctx, deploy)
+	markParentStableUnit(t, ctx, deploy)
 
 	// Create child WITHOUT any updaters annotation (simulating CREATE)
-	rs := createReplicaSetWithOwner(t, ctx, "ctrl-create-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "ctrl-create-rs", deploy)
 
 	// Ensure no updaters annotation
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	t.Logf("Child updaters (should be empty): %s", rs.Annotations[controller.UpdatersAnnotation])
 
 	// Detect with empty childUpdaters (CREATE scenario)
-	detector := drift.NewDetector(k8sClient)
+	detector := drift.NewDetector(k8sClientUnit)
 	var childUpdaters []string // Empty = CREATE
 
 	result, err := detector.Detect(ctx, rs, "creating-user", childUpdaters)
@@ -268,7 +268,7 @@ func TestRecordUpdater_AddsHash(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a deployment to use as test object
-	deploy := createDeployment(t, ctx, "record-updater-deploy")
+	deploy := createDeploymentUnit(t, ctx, "record-updater-deploy")
 
 	// Record first updater
 	user1 := "user1@example.com"
@@ -279,8 +279,8 @@ func TestRecordUpdater_AddsHash(t *testing.T) {
 
 	// Apply and re-fetch
 	deploy.SetAnnotations(annotations)
-	require.NoError(t, k8sClient.Update(ctx, deploy))
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 
 	// Record second updater
 	user2 := "user2@example.com"
@@ -313,10 +313,10 @@ func TestRecordControllerAsync_AddsHashAfterDelay(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a deployment
-	deploy := createDeployment(t, ctx, "async-ctrl-deploy")
+	deploy := createDeploymentUnit(t, ctx, "async-ctrl-deploy")
 
 	// Create tracker with test logger
-	tracker := controller.NewTracker(k8sClient, ctrl.Log)
+	tracker := controller.NewTracker(k8sClientUnit, ctrl.Log)
 	t.Logf("Created tracker, deploy name=%s ns=%s", deploy.GetName(), deploy.GetNamespace())
 
 	// Record controller async
@@ -328,7 +328,7 @@ func TestRecordControllerAsync_AddsHashAfterDelay(t *testing.T) {
 	expectedHash := controller.HashUsername(user)
 
 	ktesting.Eventually(t, func() (bool, string) {
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 			return false, fmt.Sprintf("failed to get deploy: %v", err)
 		}
 		actual := deploy.Annotations[controller.ControllersAnnotation]
@@ -351,13 +351,13 @@ func TestControllerIdentification_FullFlow(t *testing.T) {
 
 	// Step 1: Create parent deployment
 	t.Log("Step 1: Creating parent deployment")
-	deploy := createDeployment(t, ctx, "full-flow-deploy")
+	deploy := createDeploymentUnit(t, ctx, "full-flow-deploy")
 
 	// Step 2: Add controller annotation and phase annotation (simulating async recording)
 	t.Log("Step 2: Adding controller annotation to parent")
 	controllerHash := controller.HashUsername(controllerUser)
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 			return err
 		}
 		annotations := deploy.GetAnnotations()
@@ -367,33 +367,33 @@ func TestControllerIdentification_FullFlow(t *testing.T) {
 		annotations[controller.ControllersAnnotation] = controllerHash
 		annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 		deploy.SetAnnotations(annotations)
-		return k8sClient.Update(ctx, deploy)
+		return k8sClientUnit.Update(ctx, deploy)
 	})
 	require.NoError(t, err)
 
 	// Step 2b: Now set parent as stable AFTER annotation update
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
 	t.Logf("Parent gen=%d, obsGen=%d", deploy.Generation, deploy.Status.ObservedGeneration)
 
 	// Step 3: Controller creates child (first updater)
 	t.Log("Step 3: Controller creates child ReplicaSet")
-	rs := createReplicaSetWithOwner(t, ctx, "full-flow-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "full-flow-rs", deploy)
 
 	// Add controller as first updater
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 			return err
 		}
 		annotations := controller.RecordUpdater(rs, controllerUser)
 		rs.SetAnnotations(annotations)
-		return k8sClient.Update(ctx, rs)
+		return k8sClientUnit.Update(ctx, rs)
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 
 	t.Logf("Parent controllers: %s", deploy.Annotations[controller.ControllersAnnotation])
 	t.Logf("Child updaters: %s", rs.Annotations[controller.UpdatersAnnotation])
@@ -403,21 +403,21 @@ func TestControllerIdentification_FullFlow(t *testing.T) {
 
 	// Add user to child updaters
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 			return err
 		}
 		annotations := controller.RecordUpdater(rs, regularUser)
 		rs.SetAnnotations(annotations)
-		return k8sClient.Update(ctx, rs)
+		return k8sClientUnit.Update(ctx, rs)
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	t.Logf("Child updaters after user edit: %s", rs.Annotations[controller.UpdatersAnnotation])
 
 	// Step 5: Detect drift - regular user should NOT trigger drift
 	t.Log("Step 5: Checking drift for regular user")
-	detector := drift.NewDetector(k8sClient)
+	detector := drift.NewDetector(k8sClientUnit)
 	childUpdaters := drift.ParseUpdaterHashes(rs)
 
 	result, err := detector.Detect(ctx, rs, regularUser, childUpdaters)
@@ -451,25 +451,25 @@ func TestControllerAnnotationSync_PreservesKausalityAnnotations(t *testing.T) {
 	// Step 1: Create parent deployment
 	t.Log("")
 	t.Log("Step 1: Creating parent deployment")
-	deploy := createDeployment(t, ctx, "sync-protect-deploy")
+	deploy := createDeploymentUnit(t, ctx, "sync-protect-deploy")
 
 	// Set up parent as stable (gen == obsGen)
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	t.Logf("Parent: gen=%d, obsGen=%d", deploy.Generation, deploy.Status.ObservedGeneration)
 
 	// Step 2: Create child ReplicaSet with proper annotations
 	t.Log("")
 	t.Log("Step 2: Creating child ReplicaSet with kausality annotations")
-	rs := createReplicaSetWithOwner(t, ctx, "sync-protect-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "sync-protect-rs", deploy)
 
 	// Set up the child with proper kausality annotations (simulating what webhook would set)
 	controllerUser := "system:serviceaccount:kube-system:deployment-controller"
 	controllerHash := controller.HashUsername(controllerUser)
 
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 			return err
 		}
 		annotations := rs.GetAnnotations()
@@ -481,11 +481,11 @@ func TestControllerAnnotationSync_PreservesKausalityAnnotations(t *testing.T) {
 		annotations["kausality.io/updaters"] = controllerHash
 		annotations["kausality.io/approvals"] = `[{"children":[{"kind":"ReplicaSet"}]}]` // user annotation
 		rs.SetAnnotations(annotations)
-		return k8sClient.Update(ctx, rs)
+		return k8sClientUnit.Update(ctx, rs)
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	t.Logf("Child annotations before sync: trace=%q, updaters=%q, approvals=%q",
 		rs.Annotations["kausality.io/trace"],
 		rs.Annotations["kausality.io/updaters"],
@@ -517,7 +517,7 @@ func TestControllerAnnotationSync_PreservesKausalityAnnotations(t *testing.T) {
 
 	// Create handler and process the request
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    ctrl.Log,
 	})
 
@@ -587,12 +587,12 @@ func TestChildAsParent_ControllersAnnotationPreserved(t *testing.T) {
 	t.Log("When controller updates RS spec, the controllers annotation should be preserved.")
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "child-parent-deploy")
+	deploy := createDeploymentUnit(t, ctx, "child-parent-deploy")
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "child-parent-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "child-parent-rs", deploy)
 
 	// Set up RS with controllers annotation (it's also a parent to Pods)
 	deploymentController := "system:serviceaccount:kube-system:deployment-controller"
@@ -601,7 +601,7 @@ func TestChildAsParent_ControllersAnnotationPreserved(t *testing.T) {
 	replicasetControllerHash := controller.HashUsername(replicasetController)
 
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 			return err
 		}
 		annotations := rs.GetAnnotations()
@@ -612,11 +612,11 @@ func TestChildAsParent_ControllersAnnotationPreserved(t *testing.T) {
 		annotations["kausality.io/updaters"] = deploymentControllerHash
 		annotations["kausality.io/controllers"] = replicasetControllerHash // RS is parent to Pods
 		rs.SetAnnotations(annotations)
-		return k8sClient.Update(ctx, rs)
+		return k8sClientUnit.Update(ctx, rs)
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	t.Logf("RS annotations: updaters=%s, controllers=%s",
 		rs.Annotations["kausality.io/updaters"],
 		rs.Annotations["kausality.io/controllers"])
@@ -637,7 +637,7 @@ func TestChildAsParent_ControllersAnnotationPreserved(t *testing.T) {
 	newBytes, _ := json.Marshal(newRS)
 
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    ctrl.Log,
 	})
 

@@ -32,13 +32,13 @@ func TestEnforceMode_RejectionDenied(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "enforce-reject-deploy")
+	deploy := createDeploymentUnit(t, ctx, "enforce-reject-deploy")
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "enforce-reject-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "enforce-reject-rs", deploy)
 
 	// Add rejection annotation FIRST (this bumps generation)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	rejections := []approval.Rejection{
@@ -52,21 +52,21 @@ func TestEnforceMode_RejectionDenied(t *testing.T) {
 	annotations[approval.RejectionsAnnotation] = string(rejectionsJSON)
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Set parent as ready AFTER annotation update (drift scenario: gen == obsGen)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch to get managedFields
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -83,7 +83,7 @@ func TestEnforceMode_RejectionDenied(t *testing.T) {
 
 	// Create handler with ENFORCE MODE for apps/replicasets
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -93,7 +93,7 @@ func TestEnforceMode_RejectionDenied(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -159,20 +159,20 @@ func TestEnforceMode_UnapprovedDriftDenied(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "enforce-drift-deploy")
+	deploy := createDeploymentUnit(t, ctx, "enforce-drift-deploy")
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "enforce-drift-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "enforce-drift-rs", deploy)
 
 	// Mark parent as stable (initialized with matching observedGeneration) - NO approvals
-	markParentStable(t, ctx, deploy)
+	markParentStableUnit(t, ctx, deploy)
 
 	t.Logf("Parent state: gen=%d, obsGen=%d",
 		deploy.Generation, deploy.Status.ObservedGeneration)
 
 	// Create handler with ENFORCE MODE for apps/replicasets
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -182,7 +182,7 @@ func TestEnforceMode_UnapprovedDriftDenied(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -248,13 +248,13 @@ func TestEnforceMode_ApprovedDriftAllowed(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "enforce-approved-deploy")
+	deploy := createDeploymentUnit(t, ctx, "enforce-approved-deploy")
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "enforce-approved-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "enforce-approved-rs", deploy)
 
 	// Add approval annotation FIRST (this bumps generation)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	approvals := []approval.Approval{
@@ -267,21 +267,21 @@ func TestEnforceMode_ApprovedDriftAllowed(t *testing.T) {
 	}
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Set parent as ready AFTER annotation update (drift scenario: gen == obsGen)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch to get managedFields
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -298,7 +298,7 @@ func TestEnforceMode_ApprovedDriftAllowed(t *testing.T) {
 
 	// Create handler with ENFORCE MODE for apps/replicasets
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -308,7 +308,7 @@ func TestEnforceMode_ApprovedDriftAllowed(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -364,17 +364,17 @@ func TestNonEnforceMode_ReturnsWarnings(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "warning-deploy")
+	deploy := createDeploymentUnit(t, ctx, "warning-deploy")
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "warning-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "warning-rs", deploy)
 
 	// Mark parent as stable (initialized with matching observedGeneration) - NO approvals
-	markParentStable(t, ctx, deploy)
+	markParentStableUnit(t, ctx, deploy)
 
 	// Create handler WITHOUT enforce mode (default log mode)
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -384,7 +384,7 @@ func TestNonEnforceMode_ReturnsWarnings(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -462,33 +462,33 @@ func TestEnforceMode_NamespaceList(t *testing.T) {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: nsName},
 	}
-	require.NoError(t, k8sClient.Create(ctx, ns))
-	defer k8sClient.Delete(ctx, ns)
+	require.NoError(t, k8sClientUnit.Create(ctx, ns))
+	defer k8sClientUnit.Delete(ctx, ns)
 
 	// Create parent deployment in the new namespace
-	deploy := createDeploymentInNamespace(t, ctx, "ns-list-deploy", nsName)
+	deploy := createDeploymentInNamespaceUnit(t, ctx, "ns-list-deploy", nsName)
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-list-rs", nsName, deploy)
+	rs := createReplicaSetWithOwnerInNamespaceUnit(t, ctx, "ns-list-rs", nsName, deploy)
 
 	// Mark parent as initialized
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	annotations := deploy.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	require.NoError(t, k8sClient.Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Update(ctx, deploy))
 
 	// Set parent as ready (gen == obsGen) - drift scenario
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
 
 	// Create handler with enforce mode for SPECIFIC NAMESPACES
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -506,7 +506,7 @@ func TestEnforceMode_NamespaceList(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	rs.APIVersion = "apps/v1"
 	rs.Kind = "ReplicaSet"
 
@@ -551,23 +551,23 @@ func TestEnforceMode_NamespaceList_NotInList(t *testing.T) {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: nsName},
 	}
-	require.NoError(t, k8sClient.Create(ctx, ns))
-	defer k8sClient.Delete(ctx, ns)
+	require.NoError(t, k8sClientUnit.Create(ctx, ns))
+	defer k8sClientUnit.Delete(ctx, ns)
 
 	// Create parent deployment in the new namespace
-	deploy := createDeploymentInNamespace(t, ctx, "ns-list-excluded-deploy", nsName)
+	deploy := createDeploymentInNamespaceUnit(t, ctx, "ns-list-excluded-deploy", nsName)
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-list-excluded-rs", nsName, deploy)
+	rs := createReplicaSetWithOwnerInNamespaceUnit(t, ctx, "ns-list-excluded-rs", nsName, deploy)
 
 	// Set parent as ready (gen == obsGen) - drift scenario
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
 
 	// Create handler with enforce mode for DIFFERENT namespace
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -585,7 +585,7 @@ func TestEnforceMode_NamespaceList_NotInList(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	rs.APIVersion = "apps/v1"
 	rs.Kind = "ReplicaSet"
 
@@ -637,33 +637,33 @@ func TestEnforceMode_NamespaceSelector(t *testing.T) {
 			Labels: map[string]string{"critical": "true"},
 		},
 	}
-	require.NoError(t, k8sClient.Create(ctx, ns))
-	defer k8sClient.Delete(ctx, ns)
+	require.NoError(t, k8sClientUnit.Create(ctx, ns))
+	defer k8sClientUnit.Delete(ctx, ns)
 
 	// Create parent deployment
-	deploy := createDeploymentInNamespace(t, ctx, "ns-selector-deploy", nsName)
+	deploy := createDeploymentInNamespaceUnit(t, ctx, "ns-selector-deploy", nsName)
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-selector-rs", nsName, deploy)
+	rs := createReplicaSetWithOwnerInNamespaceUnit(t, ctx, "ns-selector-rs", nsName, deploy)
 
 	// Mark parent as initialized
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	annotations := deploy.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	require.NoError(t, k8sClient.Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Update(ctx, deploy))
 
 	// Set parent as ready (gen == obsGen) - drift scenario
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
 
 	// Create handler with namespace selector
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -683,7 +683,7 @@ func TestEnforceMode_NamespaceSelector(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	rs.APIVersion = "apps/v1"
 	rs.Kind = "ReplicaSet"
 
@@ -731,33 +731,33 @@ func TestEnforceMode_NamespaceSelector_NoMatch(t *testing.T) {
 			Labels: map[string]string{"env": "dev"}, // No critical label
 		},
 	}
-	require.NoError(t, k8sClient.Create(ctx, ns))
-	defer k8sClient.Delete(ctx, ns)
+	require.NoError(t, k8sClientUnit.Create(ctx, ns))
+	defer k8sClientUnit.Delete(ctx, ns)
 
 	// Create parent deployment
-	deploy := createDeploymentInNamespace(t, ctx, "ns-selector-nomatch-deploy", nsName)
+	deploy := createDeploymentInNamespaceUnit(t, ctx, "ns-selector-nomatch-deploy", nsName)
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwnerInNamespace(t, ctx, "ns-selector-nomatch-rs", nsName, deploy)
+	rs := createReplicaSetWithOwnerInNamespaceUnit(t, ctx, "ns-selector-nomatch-rs", nsName, deploy)
 
 	// Mark parent as initialized
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	annotations := deploy.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	require.NoError(t, k8sClient.Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Update(ctx, deploy))
 
 	// Set parent as ready (gen == obsGen) - drift scenario
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
 
 	// Create handler with namespace selector
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -777,7 +777,7 @@ func TestEnforceMode_NamespaceSelector_NoMatch(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	rs.APIVersion = "apps/v1"
 	rs.Kind = "ReplicaSet"
 
@@ -821,29 +821,29 @@ func TestEnforceMode_ObjectSelector(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment WITH protected label
-	deploy := createDeploymentWithLabels(t, ctx, "obj-selector-deploy", map[string]string{"protected": "true"})
+	deploy := createDeploymentWithLabelsUnit(t, ctx, "obj-selector-deploy", map[string]string{"protected": "true"})
 
 	// Create child ReplicaSet with labels
-	rs := createReplicaSetWithOwnerAndLabels(t, ctx, "obj-selector-rs", deploy, map[string]string{"protected": "true"})
+	rs := createReplicaSetWithOwnerAndLabelsUnit(t, ctx, "obj-selector-rs", deploy, map[string]string{"protected": "true"})
 
 	// Mark parent as initialized
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	annotations := deploy.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	require.NoError(t, k8sClient.Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Update(ctx, deploy))
 
 	// Set parent as ready (gen == obsGen) - drift scenario
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
 
 	// Create handler with object selector
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -863,7 +863,7 @@ func TestEnforceMode_ObjectSelector(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	rs.APIVersion = "apps/v1"
 	rs.Kind = "ReplicaSet"
 
@@ -903,29 +903,29 @@ func TestEnforceMode_ObjectSelector_NoMatch(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment WITHOUT protected label
-	deploy := createDeploymentWithLabels(t, ctx, "obj-selector-nomatch-deploy", map[string]string{"tier": "frontend"})
+	deploy := createDeploymentWithLabelsUnit(t, ctx, "obj-selector-nomatch-deploy", map[string]string{"tier": "frontend"})
 
 	// Create child ReplicaSet WITHOUT protected label
-	rs := createReplicaSetWithOwnerAndLabels(t, ctx, "obj-selector-nomatch-rs", deploy, map[string]string{"tier": "frontend"})
+	rs := createReplicaSetWithOwnerAndLabelsUnit(t, ctx, "obj-selector-nomatch-rs", deploy, map[string]string{"tier": "frontend"})
 
 	// Mark parent as initialized
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	annotations := deploy.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	require.NoError(t, k8sClient.Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Update(ctx, deploy))
 
 	// Set parent as ready (gen == obsGen) - drift scenario
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
 
 	// Create handler with object selector
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -945,7 +945,7 @@ func TestEnforceMode_ObjectSelector_NoMatch(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs))
 	rs.APIVersion = "apps/v1"
 	rs.Kind = "ReplicaSet"
 

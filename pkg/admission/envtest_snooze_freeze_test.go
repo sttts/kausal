@@ -63,10 +63,10 @@ func TestSnooze_SuppressesCallbackWhenActive(t *testing.T) {
 	}
 
 	// Create parent deployment with snooze annotation
-	deploy := createDeployment(t, ctx, "snooze-deploy")
+	deploy := createDeploymentUnit(t, ctx, "snooze-deploy")
 
 	// Add snooze annotation (snooze until 1 hour from now)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	annotations := deploy.GetAnnotations()
@@ -77,24 +77,24 @@ func TestSnooze_SuppressesCallbackWhenActive(t *testing.T) {
 	annotations[approval.SnoozeAnnotation] = snoozeUntil
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "snooze-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "snooze-rs", deploy)
 
 	// Set parent as ready (drift scenario: gen == obsGen)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch to get managedFields
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestSnooze_SuppressesCallbackWhenActive(t *testing.T) {
 
 	// Create handler with callback sender
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client:         k8sClient,
+		Client:         k8sClientUnit,
 		Log:            ctrl.Log.WithName("test-snooze"),
 		CallbackSender: callbackSender,
 		DriftConfig: &config.Config{
@@ -120,7 +120,7 @@ func TestSnooze_SuppressesCallbackWhenActive(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -210,10 +210,10 @@ func TestSnooze_ExpiredDoesNotSuppressCallback(t *testing.T) {
 	}
 
 	// Create parent deployment with EXPIRED snooze annotation
-	deploy := createDeployment(t, ctx, "expired-snooze-deploy")
+	deploy := createDeploymentUnit(t, ctx, "expired-snooze-deploy")
 
 	// Add expired snooze annotation (snooze until 1 hour AGO)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	annotations := deploy.GetAnnotations()
@@ -224,24 +224,24 @@ func TestSnooze_ExpiredDoesNotSuppressCallback(t *testing.T) {
 	annotations[approval.SnoozeAnnotation] = expiredSnooze
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "expired-snooze-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "expired-snooze-rs", deploy)
 
 	// Set parent as ready (drift scenario)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch to get managedFields
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -256,7 +256,7 @@ func TestSnooze_ExpiredDoesNotSuppressCallback(t *testing.T) {
 
 	// Create handler with callback sender
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client:         k8sClient,
+		Client:         k8sClientUnit,
 		Log:            ctrl.Log.WithName("test-expired-snooze"),
 		CallbackSender: callbackSender,
 		DriftConfig: &config.Config{
@@ -267,7 +267,7 @@ func TestSnooze_ExpiredDoesNotSuppressCallback(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -322,13 +322,13 @@ func TestFreeze_BlocksAllMutations(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment with freeze AND approval
-	deploy := createDeployment(t, ctx, "freeze-deploy")
+	deploy := createDeploymentUnit(t, ctx, "freeze-deploy")
 
 	// Create child ReplicaSet FIRST
-	rs := createReplicaSetWithOwner(t, ctx, "freeze-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "freeze-rs", deploy)
 
 	// Add freeze annotation AND approval (freeze should override)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -345,21 +345,21 @@ func TestFreeze_BlocksAllMutations(t *testing.T) {
 	annotations[approval.FreezeAnnotation] = "true"
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Set parent as ready
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -374,7 +374,7 @@ func TestFreeze_BlocksAllMutations(t *testing.T) {
 
 	// Create handler (enforce mode)
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    ctrl.Log.WithName("test-freeze"),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -384,7 +384,7 @@ func TestFreeze_BlocksAllMutations(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -439,13 +439,13 @@ func TestFreeze_FalseDoesNotBlock(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment with freeze=false
-	deploy := createDeployment(t, ctx, "freeze-false-deploy")
+	deploy := createDeploymentUnit(t, ctx, "freeze-false-deploy")
 
 	// Create child ReplicaSet FIRST
-	rs := createReplicaSetWithOwner(t, ctx, "freeze-false-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "freeze-false-rs", deploy)
 
 	// Add freeze=false and approval
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -461,21 +461,21 @@ func TestFreeze_FalseDoesNotBlock(t *testing.T) {
 	annotations[approval.FreezeAnnotation] = "false" // Explicitly false
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Set parent as ready
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -490,7 +490,7 @@ func TestFreeze_FalseDoesNotBlock(t *testing.T) {
 
 	// Create handler (enforce mode)
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    ctrl.Log.WithName("test-freeze-false"),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -500,7 +500,7 @@ func TestFreeze_FalseDoesNotBlock(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -549,13 +549,13 @@ func TestFreeze_StructuredAnnotation_MessageInDenial(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "structured-freeze-deploy")
+	deploy := createDeploymentUnit(t, ctx, "structured-freeze-deploy")
 
 	// Create child ReplicaSet FIRST
-	rs := createReplicaSetWithOwner(t, ctx, "structured-freeze-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "structured-freeze-rs", deploy)
 
 	// Add structured freeze annotation
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -569,21 +569,21 @@ func TestFreeze_StructuredAnnotation_MessageInDenial(t *testing.T) {
 	}
 	annotations[approval.FreezeAnnotation] = freezeJSON
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Set parent as ready
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -598,7 +598,7 @@ func TestFreeze_StructuredAnnotation_MessageInDenial(t *testing.T) {
 
 	// Create handler (enforce mode)
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    ctrl.Log.WithName("test-structured-freeze"),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -608,7 +608,7 @@ func TestFreeze_StructuredAnnotation_MessageInDenial(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -698,10 +698,10 @@ func TestSnooze_StructuredAnnotation(t *testing.T) {
 	}
 
 	// Create parent deployment with structured snooze annotation
-	deploy := createDeployment(t, ctx, "structured-snooze-deploy")
+	deploy := createDeploymentUnit(t, ctx, "structured-snooze-deploy")
 
 	// Add structured snooze annotation (snooze until 1 hour from now)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	annotations := deploy.GetAnnotations()
@@ -714,24 +714,24 @@ func TestSnooze_StructuredAnnotation(t *testing.T) {
 	annotations[approval.SnoozeAnnotation] = snoozeJSON
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "structured-snooze-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "structured-snooze-rs", deploy)
 
 	// Set parent as ready (drift scenario: gen == obsGen)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch to get managedFields
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -746,7 +746,7 @@ func TestSnooze_StructuredAnnotation(t *testing.T) {
 
 	// Create handler with callback sender
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client:         k8sClient,
+		Client:         k8sClientUnit,
 		Log:            ctrl.Log.WithName("test-structured-snooze"),
 		CallbackSender: callbackSender,
 		DriftConfig: &config.Config{
@@ -757,7 +757,7 @@ func TestSnooze_StructuredAnnotation(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -830,22 +830,22 @@ func TestFreeze_AllowedDuringDeletion(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment with a finalizer (so delete sets deletionTimestamp)
-	deploy := createDeployment(t, ctx, "freeze-delete-deploy")
+	deploy := createDeploymentUnit(t, ctx, "freeze-delete-deploy")
 
 	// Add finalizer to prevent immediate deletion
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Finalizers = append(deploy.Finalizers, "test.kausality.io/block-deletion")
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to add finalizer: %v", err)
 	}
 
 	// Create child ReplicaSet FIRST
-	rs := createReplicaSetWithOwner(t, ctx, "freeze-delete-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "freeze-delete-rs", deploy)
 
 	// Add freeze annotation
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	annotations := deploy.GetAnnotations()
@@ -854,26 +854,26 @@ func TestFreeze_AllowedDuringDeletion(t *testing.T) {
 	}
 	annotations[approval.FreezeAnnotation] = "true"
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to add freeze annotation: %v", err)
 	}
 
 	// Set parent as ready (so freeze would normally block)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Delete the deployment (sets deletionTimestamp but doesn't delete due to finalizer)
-	if err := k8sClient.Delete(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Delete(ctx, deploy); err != nil {
 		t.Fatalf("failed to delete deployment: %v", err)
 	}
 
 	// Re-fetch to verify deletionTimestamp is set
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	if deploy.DeletionTimestamp == nil {
@@ -888,7 +888,7 @@ func TestFreeze_AllowedDuringDeletion(t *testing.T) {
 
 	// Create handler (enforce mode to make test meaningful)
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    ctrl.Log.WithName("test-freeze-delete"),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -898,7 +898,7 @@ func TestFreeze_AllowedDuringDeletion(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -941,8 +941,8 @@ func TestFreeze_AllowedDuringDeletion(t *testing.T) {
 	t.Log("SUCCESS: Freeze does NOT block mutations when parent is being deleted")
 
 	// Cleanup: remove finalizer to allow deletion
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err == nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err == nil {
 		deploy.Finalizers = nil
-		_ = k8sClient.Update(ctx, deploy)
+		_ = k8sClientUnit.Update(ctx, deploy)
 	}
 }

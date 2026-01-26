@@ -27,9 +27,9 @@ func TestTracePropagation_NewOrigin(t *testing.T) {
 	ctx := context.Background()
 
 	// Create deployment without parent (origin)
-	deploy := createDeployment(t, ctx, "trace-origin-deploy")
+	deploy := createDeploymentUnit(t, ctx, "trace-origin-deploy")
 
-	propagator := trace.NewPropagator(k8sClient)
+	propagator := trace.NewPropagator(k8sClientUnit)
 	result, err := propagator.Propagate(ctx, deploy, "test-user@example.com", nil, "")
 	if err != nil {
 		t.Fatalf("propagation failed: %v", err)
@@ -58,7 +58,7 @@ func TestTracePropagation_ExtendParent(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment with a trace
-	deploy := createDeployment(t, ctx, "trace-extend-deploy")
+	deploy := createDeploymentUnit(t, ctx, "trace-extend-deploy")
 
 	// Set a trace on the parent
 	parentTrace := trace.Trace{
@@ -70,7 +70,7 @@ func TestTracePropagation_ExtendParent(t *testing.T) {
 	}
 	annotations[trace.TraceAnnotation] = parentTrace.String()
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with trace: %v", err)
 	}
 
@@ -78,33 +78,33 @@ func TestTracePropagation_ExtendParent(t *testing.T) {
 	// First bump generation
 	replicas := int32(2)
 	deploy.Spec.Replicas = &replicas
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment spec: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
 	// Status update with obsGen < generation
 	deploy.Status.ObservedGeneration = deploy.Generation - 1
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment status: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
 	t.Logf("Parent: gen=%d, obsGen=%d", deploy.Generation, deploy.Status.ObservedGeneration)
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "trace-extend-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "trace-extend-rs", deploy)
 
 	// Propagate trace to child - controller-sa is the only updater, so it's the controller
-	propagator := trace.NewPropagator(k8sClient)
+	propagator := trace.NewPropagator(k8sClientUnit)
 	childUpdaters := []string{controller.HashUsername("controller-sa")}
 	result, err := propagator.Propagate(ctx, rs, "controller-sa", childUpdaters, "")
 	if err != nil {
@@ -132,7 +132,7 @@ func TestDifferentActor_NewTraceOrigin(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment with a trace
-	deploy := createDeployment(t, ctx, "diff-actor-deploy")
+	deploy := createDeploymentUnit(t, ctx, "diff-actor-deploy")
 
 	// Set a trace on the parent
 	parentTrace := trace.Trace{
@@ -144,32 +144,32 @@ func TestDifferentActor_NewTraceOrigin(t *testing.T) {
 	}
 	annotations[trace.TraceAnnotation] = parentTrace.String()
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with trace: %v", err)
 	}
 
 	// Set parent as stable (gen == obsGen) - any change would be drift if from controller
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
 	t.Logf("Parent: gen=%d, obsGen=%d", deploy.Generation, deploy.Status.ObservedGeneration)
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "diff-actor-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "diff-actor-rs", deploy)
 
 	// Propagate trace with DIFFERENT user (simulating kubectl or another actor)
 	// childUpdaters contains the original controller's hash, not the different user
-	propagator := trace.NewPropagator(k8sClient)
+	propagator := trace.NewPropagator(k8sClientUnit)
 	childUpdaters := []string{controller.HashUsername("original-controller")}
 	result, err := propagator.Propagate(ctx, rs, "different-user", childUpdaters, "test-req-uid")
 	if err != nil {
@@ -202,7 +202,7 @@ func TestAdmissionHandler_TraceInResponse(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a standalone deployment (no parent - will be origin)
-	deploy := createDeployment(t, ctx, "trace-patch-deploy")
+	deploy := createDeploymentUnit(t, ctx, "trace-patch-deploy")
 
 	// Set TypeMeta
 	deploy.APIVersion = "apps/v1"
@@ -216,7 +216,7 @@ func TestAdmissionHandler_TraceInResponse(t *testing.T) {
 
 	// Create handler
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 	})
 

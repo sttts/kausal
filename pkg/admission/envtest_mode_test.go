@@ -45,8 +45,8 @@ func TestModeAnnotation_NamespaceEnforce(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, k8sClient.Create(ctx, enforceNS))
-	t.Cleanup(func() { _ = k8sClient.Delete(ctx, enforceNS) })
+	require.NoError(t, k8sClientUnit.Create(ctx, enforceNS))
+	t.Cleanup(func() { _ = k8sClientUnit.Delete(ctx, enforceNS) })
 
 	// Create a Deployment in the enforce namespace
 	deploy := &appsv1.Deployment{
@@ -71,14 +71,14 @@ func TestModeAnnotation_NamespaceEnforce(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, k8sClient.Create(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Create(ctx, deploy))
 
 	// Get the deployment back to have UID
-	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
+	require.NoError(t, k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy))
 
 	// Create handler with default log mode
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -122,7 +122,7 @@ func TestModeAnnotation_NamespaceEnforce(t *testing.T) {
 
 	// Simulate stable parent (generation == observedGeneration)
 	deploy.Status.ObservedGeneration = deploy.Generation
-	require.NoError(t, k8sClient.Status().Update(ctx, deploy))
+	require.NoError(t, k8sClientUnit.Status().Update(ctx, deploy))
 
 	// Create admission request for the ReplicaSet (simulating drift)
 	rsBytes, err := json.Marshal(rs)
@@ -165,12 +165,12 @@ func TestModeAnnotation_ObjectOverridesNamespace(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, k8sClient.Create(ctx, enforceNS))
-	t.Cleanup(func() { _ = k8sClient.Delete(ctx, enforceNS) })
+	require.NoError(t, k8sClientUnit.Create(ctx, enforceNS))
+	t.Cleanup(func() { _ = k8sClientUnit.Delete(ctx, enforceNS) })
 
 	// Create handler with default log mode
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    logr.Discard(),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
