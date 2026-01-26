@@ -15,18 +15,18 @@ import (
 
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/kausality-io/kausality/api/v1alpha1"
+)
+
+// Annotation keys - re-exported from api/v1alpha1.
+const (
+	ControllersAnnotation = v1alpha1.ControllersAnnotation
+	UpdatersAnnotation    = v1alpha1.UpdatersAnnotation
+	MaxHashes             = v1alpha1.MaxHashes
 )
 
 const (
-	// ControllersAnnotation stores hashes of users who update parent status.
-	ControllersAnnotation = "kausality.io/controllers"
-
-	// UpdatersAnnotation stores hashes of users who update child spec.
-	UpdatersAnnotation = "kausality.io/updaters"
-
-	// MaxHashes is the maximum number of hashes to store in annotations.
-	MaxHashes = 5
-
 	// asyncUpdateDelay is the delay before async annotation updates.
 	// Set to 0 for immediate recording - necessary because status subresource
 	// patches to metadata don't persist (Kubernetes only updates .status).
@@ -235,13 +235,11 @@ func Intersect(a, b []string) []string {
 	return result
 }
 
-// PhaseAnnotation stores the lifecycle phase of a parent resource.
-const PhaseAnnotation = "kausality.io/phase"
-
-// Phase values for the PhaseAnnotation.
+// Phase annotation and values - re-exported from api/v1alpha1.
 const (
-	PhaseValueInitializing = "initializing"
-	PhaseValueInitialized  = "initialized"
+	PhaseAnnotation        = v1alpha1.PhaseAnnotation
+	PhaseValueInitializing = v1alpha1.PhaseValueInitializing
+	PhaseValueInitialized  = v1alpha1.PhaseValueInitialized
 )
 
 // RecordPhaseAsync schedules an async update to set the phase annotation.
