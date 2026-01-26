@@ -248,6 +248,22 @@ Multiple `Kausality` resources can coexist. When policies overlap, the most spec
 
 See [charts/kausality/values.yaml](charts/kausality/values.yaml) for Helm configuration options (replicas, resources, certificates, etc.). Policy configuration is done via CRDs, not Helm values.
 
+### Controller and Security
+
+The Kausality controller automatically manages webhook configuration and RBAC based on your policies. It requires broad permissions (`*/*`) to create per-policy ClusterRoles.
+
+This is not an additional security risk: the controller already manages `MutatingWebhookConfiguration`, which can intercept any API request — effectively privileged access.
+
+**Disabling the controller:** If your security posture requires it, disable the controller and manage webhook rules and RBAC manually:
+
+```yaml
+# values.yaml
+controller:
+  enabled: false
+```
+
+See [Kausality CRD Design](doc/design/KAUSALITY_CRD.md#disabling-the-controller) for manual configuration examples.
+
 ## Development
 
 ### Prerequisites

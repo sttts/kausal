@@ -217,14 +217,66 @@ status:
 | `Ready` | Policy is fully operational |
 | `WebhookConfigured` | Webhook configuration has been updated |
 
-## Controller Behavior (Future)
+## Controller Behavior
 
-The Kausality controller (not yet implemented) will:
+The Kausality controller watches `Kausality` resources and:
 
-1. Watch `Kausality` resources
-2. Expand `resources: ["*"]` via discovery API
-3. Reconcile `MutatingWebhookConfiguration` rules
-4. Update status conditions
+1. Expands `resources: ["*"]` via discovery API
+2. Reconciles `MutatingWebhookConfiguration` rules
+3. Creates per-policy `ClusterRoles` for RBAC aggregation
+4. Updates status conditions
+
+### Controller Permissions
+
+The controller requires broad RBAC permissions (`*/*`) to create per-policy ClusterRoles that grant resource access to the webhook. This is not an additional security risk because:
+
+- The controller already manages `MutatingWebhookConfiguration`, which can intercept any API request
+- Managing webhook configuration is effectively privileged access
+- The RBAC delegation simply enables the webhook to read/update the resources it intercepts
+
+### Disabling the Controller
+
+If the controller's broad permissions are unacceptable for your security posture, you can disable it:
+
+```yaml
+# values.yaml
+controller:
+  enabled: false
+```
+
+When the controller is disabled, you must manually manage:
+
+1. **MutatingWebhookConfiguration** — Define which resources the webhook intercepts
+2. **ClusterRoles** — Grant the webhook ServiceAccount access to tracked resources
+
+Example static configuration:
+
+```yaml
+# Manual webhook configuration
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: kausality-webhook
+webhooks:
+  - name: kausality.kausality.io
+    rules:
+      - apiGroups: ["apps"]
+        resources: ["deployments", "replicasets"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+    # ... other webhook settings
+---
+# Manual RBAC for webhook
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kausality-webhook-resources
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+```
+
+The `Kausality` CRDs still work for policy configuration (mode resolution, namespace filtering), but webhook rules and RBAC are your responsibility.
 
 ## Design Rationale
 

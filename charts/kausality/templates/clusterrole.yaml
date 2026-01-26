@@ -47,4 +47,13 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
+
+  # Broad permissions to delegate via per-policy ClusterRoles.
+  # The controller can only grant permissions it holds itself.
+  # Note: The controller already manages MutatingWebhookConfiguration which is
+  # effectively privileged (can intercept any request). Granting RBAC delegation
+  # does not open an additional security hole.
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "update", "patch"]
 {{- end }}
