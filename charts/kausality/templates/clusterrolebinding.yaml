@@ -1,3 +1,4 @@
+# Binding for core permissions (Kausality CRDs, webhook config, RBAC management)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -8,6 +9,22 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "kausality.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kausality.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Binding for resource access (aggregated from per-policy ClusterRoles)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kausality.fullname" . }}-resource-access
+  labels:
+    {{- include "kausality.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kausality.fullname" . }}-resource-access
 subjects:
   - kind: ServiceAccount
     name: {{ include "kausality.serviceAccountName" . }}

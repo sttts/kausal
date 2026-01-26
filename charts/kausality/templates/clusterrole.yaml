@@ -1,3 +1,4 @@
+# ClusterRole for the webhook (reads Kausality policies for mode resolution)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -5,17 +6,26 @@ metadata:
   labels:
     {{- include "kausality.labels" . | nindent 4 }}
 rules:
-  # Read any resource to resolve parent objects
-  - apiGroups: ["*"]
-    resources: ["*"]
+  # Read Kausality policies for mode resolution
+  - apiGroups: ["kausality.io"]
+    resources: ["kausalities"]
     verbs: ["get", "list", "watch"]
 
-  # Update resources for controller annotation updates
-  - apiGroups: ["*"]
-    resources: ["*"]
-    verbs: ["update", "patch"]
-
-  # Manage Kausality CRDs (policy controller)
+  # Read namespaces for label-based filtering
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+# ClusterRole for the controller (manages CRDs, webhook config, RBAC)
+{{- if .Values.controller.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kausality.controllerFullname" . }}
+  labels:
+    {{- include "kausality.controllerLabels" . | nindent 4 }}
+rules:
+  # Manage Kausality CRDs
   - apiGroups: ["kausality.io"]
     resources: ["kausalities"]
     verbs: ["get", "list", "watch", "update", "patch"]
@@ -23,7 +33,18 @@ rules:
     resources: ["kausalities/status"]
     verbs: ["get", "update", "patch"]
 
-  # Manage webhook configuration (policy controller)
+  # Manage webhook configuration
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["mutatingwebhookconfigurations"]
     verbs: ["get", "list", "watch", "update", "patch"]
+
+  # Manage per-policy ClusterRoles (RBAC generation)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Read namespaces for label-based filtering
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+{{- end }}

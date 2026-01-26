@@ -1,0 +1,14 @@
+# Aggregate ClusterRole for resource access.
+# Per-policy ClusterRoles with the aggregation label are automatically
+# aggregated into this role by Kubernetes RBAC.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kausality.fullname" . }}-resource-access
+  labels:
+    {{- include "kausality.labels" . | nindent 4 }}
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        kausality.io/aggregate-to-resource-access: "true"
+rules: []  # Populated by aggregation from per-policy ClusterRoles
