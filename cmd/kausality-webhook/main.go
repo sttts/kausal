@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -146,12 +147,14 @@ func main() {
 		}
 	}()
 
-	// Wait for cache sync before serving webhooks
-	if !mgr.GetCache().WaitForCacheSync(ctx) {
-		log.Error(nil, "failed to sync cache")
-		os.Exit(1)
+	// Wait for cache sync before serving webhooks (with timeout)
+	syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer syncCancel()
+	if !mgr.GetCache().WaitForCacheSync(syncCtx) {
+		log.Error(nil, "cache sync timed out, continuing without watch-driven updates")
+	} else {
+		log.Info("cache synced, policy store ready")
 	}
-	log.Info("cache synced, policy store ready")
 
 	// Create and start webhook server
 	server := webhook.NewServer(webhook.Config{
