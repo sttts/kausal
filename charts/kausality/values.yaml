@@ -1,5 +1,8 @@
 # Default values for kausality
 
+# Webhook replica count. Set to 2+ for high availability.
+# Rolling updates use maxUnavailable=0, maxSurge=1 to ensure
+# at least one pod is always running during upgrades.
 replicaCount: 1
 
 image:
