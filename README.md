@@ -5,25 +5,11 @@
 <h1 align="center">Kausality</h1>
 
 <p align="center">
-  <strong style="color: red;">&#9888; EXPERIMENTAL &#9888;</strong>
-</p>
-
-<table align="center">
-<tr>
-<td>
-<strong>This project is highly experimental and under active development.</strong><br>
-APIs, behavior, and configuration may change without notice.<br>
-<strong>Not recommended for production use.</strong>
-</td>
-</tr>
-</table>
-
-<p align="center">
   <em>"Every mutation needs a cause."</em>
 </p>
 
 <p align="center">
-  <strong>Causal traceability for Kubernetes resource mutations</strong>
+  <strong>Drift detection for Kubernetes — know when your infrastructure changes unexpectedly</strong>
 </p>
 
 <p align="center">
@@ -34,73 +20,245 @@ APIs, behavior, and configuration may change without notice.<br>
 </p>
 
 <p align="center">
-  <a href="#overview">Overview</a> •
-  <a href="#how-it-works">How It Works</a> •
-  <a href="#installation">Installation</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#what-is-drift">What is Drift?</a> •
   <a href="#configuration">Configuration</a> •
-  <a href="#development">Development</a>
+  <a href="#documentation">Documentation</a>
 </p>
 
 ---
 
-## Overview
+> **⚠️ Experimental**: This project is under active development. APIs may change without notice. Not recommended for production use yet.
 
-Kausality detects unexpected infrastructure changes (drift) in Kubernetes by monitoring when controllers mutate resources without an explicit spec change. It distinguishes between:
+## Why Kausality?
 
-- **Expected changes**: Triggered by spec changes (`generation != observedGeneration`)
-- **Unexpected changes**: Triggered by drift, external modifications, or software updates (`generation == observedGeneration`)
+Ever had your infrastructure change without anyone touching it? Controllers reconciling, external resources drifting, software updates causing unexpected mutations — Kausality catches these.
 
-The system supports two modes:
-- **Log mode** (default): Drift is detected and logged, warnings returned, but mutations are allowed
-- **Enforce mode**: Drift without approval is denied
+**The problem**: Kubernetes controllers constantly reconcile resources. When something external changes (cloud state, referenced configs, controller behavior), your resources change too — silently, without audit trail.
 
-See [Configuration](#drift-detection-mode) for per-resource mode settings.
+**The solution**: Kausality intercepts mutations and asks: "Did someone actually request this change, or is this drift?" If it's drift, you get notified (or can block it).
+
+## Quick Start
+
+### 1. Install Kausality
+
+```bash
+# Clone the repository
+git clone https://github.com/kausality-io/kausality.git
+cd kausality
+
+# Install with Helm
+helm install kausality ./charts/kausality \
+  --namespace kausality-system \
+  --create-namespace
+```
+
+### 2. Create a Policy
+
+Tell Kausality what to watch. Save this as `policy.yaml`:
+
+```yaml
+apiVersion: kausality.io/v1alpha1
+kind: Kausality
+metadata:
+  name: watch-apps
+spec:
+  resources:
+    - apiGroups: ["apps"]
+      resources: ["deployments", "replicasets"]
+  mode: log  # Detect and warn, don't block
+```
+
+```bash
+kubectl apply -f policy.yaml
+```
+
+### 3. See It In Action
+
+Create a Deployment and wait for it to stabilize:
+
+```bash
+kubectl create deployment nginx --image=nginx:1.24
+kubectl rollout status deployment/nginx
+```
+
+Now cause drift by directly modifying the ReplicaSet:
+
+```bash
+# Get the ReplicaSet name
+RS=$(kubectl get rs -l app=nginx -o jsonpath='{.items[0].metadata.name}')
+
+# Directly modify the ReplicaSet (this is drift!)
+kubectl patch rs $RS --type=merge -p '{"spec":{"replicas":3}}'
+```
+
+You'll see a warning:
+
+```
+Warning: [kausality] drift detected: controller updating ReplicaSet while parent Deployment is stable
+```
+
+The controller will try to "fix" this back to the original replica count — and Kausality detects that as drift too, because the Deployment spec hasn't changed.
+
+### 4. Enable Drift Logging (Optional)
+
+To see detailed DriftReports, enable the backend:
+
+```bash
+helm upgrade kausality ./charts/kausality \
+  --namespace kausality-system \
+  --set backend.enabled=true
+```
+
+View the drift logs:
+
+```bash
+kubectl logs -n kausality-system -l app.kubernetes.io/name=kausality-backend -f
+```
+
+---
+
+## What is Drift?
+
+**Drift** = a controller making changes when nothing requested that change.
+
+Kausality distinguishes between:
+
+| Scenario | What Happens | Is it Drift? |
+|----------|--------------|--------------|
+| You update a Deployment | Controller creates new ReplicaSet | **No** — expected reconciliation |
+| Cloud resource changes externally | Controller updates child resources | **Yes** — no spec change triggered this |
+| You directly edit a ReplicaSet | Controller reverts your change | **Yes** — controller acting without spec change |
+| Software update changes controller behavior | Controller re-reconciles differently | **Yes** — silent change |
+
+### How Detection Works
+
+Kausality tracks who updates what:
+
+1. **Parent status updates** → records the controller's identity
+2. **Child spec updates** → checks if this is the same controller
+3. **Stable parent** (`generation == observedGeneration`) + **controller update** = **drift**
+
+Different actors (you running `kubectl`, HPA, GitOps tools) are *not* drift — they start new causal chains.
+
+---
+
+## Configuration
+
+### Kausality CRD
+
+The `Kausality` CRD defines what to monitor and how:
+
+```yaml
+apiVersion: kausality.io/v1alpha1
+kind: Kausality
+metadata:
+  name: production-policy
+spec:
+  # What resources to watch
+  resources:
+    - apiGroups: ["apps"]
+      resources: ["deployments", "replicasets", "statefulsets"]
+    - apiGroups: ["example.com"]
+      resources: ["*"]
+      excluded: ["unwanted-resource"]
+
+  # Which namespaces (optional — defaults to all)
+  namespaces:
+    names: ["production", "staging"]
+    # Or use selectors:
+    # selector:
+    #   matchLabels:
+    #     env: production
+    excluded: ["kube-system"]
+
+  # Filter by object labels (optional)
+  objectSelector:
+    matchLabels:
+      managed-by: kausality
+
+  # Mode: log or enforce
+  mode: log
+
+  # Override mode for specific cases
+  overrides:
+    - namespaces: ["production"]
+      mode: enforce
+```
+
+### Modes
+
+| Mode | Behavior |
+|------|----------|
+| `log` | Detect drift, return warnings, allow the mutation |
+| `enforce` | Detect drift, **block** mutations without approval |
+
+### Approvals (Enforce Mode)
+
+In `enforce` mode, you can approve specific drift:
+
+```yaml
+# On the parent resource
+metadata:
+  annotations:
+    kausality.io/approvals: |
+      [{"apiVersion":"apps/v1","kind":"ReplicaSet","name":"nginx-abc123","mode":"always"}]
+```
+
+Approval modes:
+- `always` — permanently approved
+- `once` — consumed after first use
+- `generation` — valid until parent generation changes
+
+---
 
 ## How It Works
 
-When a mutation is intercepted, Kausality:
+### Architecture
 
-1. **Identifies the actor** via user hash tracking — correlating users who update parent status with users who update child spec
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   API Server    │────▶│  Kausality       │────▶│  Backend        │
+│                 │     │  Webhook         │     │  (optional)     │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                               │
+                               ▼
+                        ┌──────────────────┐
+                        │  Kausality       │
+                        │  Controller      │
+                        └──────────────────┘
+                               │
+                               ▼
+                        ┌──────────────────┐
+                        │  Kausality CRDs  │
+                        │  (policies)      │
+                        └──────────────────┘
+```
 
-2. **Checks the parent's state** (`generation` vs `observedGeneration`)
-
-| Actor | Parent State | Result |
-|-------|--------------|--------|
-| Controller | gen != obsGen | **Expected** — controller is reconciling |
-| Controller | gen == obsGen | **Drift** — controller changing without spec change |
-| Different actor | any | **New origin** — not drift, just a different causal chain |
-
-**Drift** specifically means: the controller is making changes when the parent spec hasn't changed. This could indicate:
-- External modifications to cloud resources
-- Updates to referenced resources (ClusterRelease, MachineClass)
-- Controller behavior changes from software updates
-
-**Different actors** (kubectl, HPA, GitOps tools) are not considered drift — they start new causal chains and are currently allowed. A planned ApprovalPolicy CRD will enable restricting certain actors.
+| Component | Purpose |
+|-----------|---------|
+| **Webhook** | Intercepts mutations, detects drift, adds warnings/blocks |
+| **Controller** | Watches Kausality CRDs, configures webhook rules and RBAC |
+| **Backend** | Receives DriftReports for logging/alerting (optional) |
 
 ### Lifecycle Phases
 
-Kausality handles different lifecycle phases:
+Kausality handles resource lifecycle:
 
 | Phase | Behavior |
 |-------|----------|
-| **Initializing** | Allow all changes (resource is being set up) |
-| **Initialized** | Drift detection applies |
-| **Deleting** | Allow all changes (cleanup phase) |
+| **Initializing** | Allow all changes (resource setting up) |
+| **Initialized** | Drift detection active |
+| **Deleting** | Allow all changes (cleanup) |
 
-The `kausality.io/phase` annotation tracks the lifecycle phase:
-- `initializing` — Resource not yet ready
-- `initialized` — Resource reached steady state (persisted, never downgraded)
-- `deleting` — Not stored; derived from `deletionTimestamp`
-
-Initialization is detected by checking (in order):
-1. `kausality.io/phase: "initialized"` annotation
-2. `Initialized=True` condition
-3. `Ready=True` condition
-4. `status.observedGeneration` matches `generation` AND (`Synced=True` OR `Ready=True`)
+Initialization is detected via:
+- `kausality.io/phase: initialized` annotation
+- `Initialized=True` or `Ready=True` conditions
+- `observedGeneration` matching `generation`
 
 ### Trace Labels
 
-Attach custom metadata to trace entries via `kausality.io/trace-*` annotations:
+Attach metadata to trace entries for correlation:
 
 ```yaml
 metadata:
@@ -109,302 +267,117 @@ metadata:
     kausality.io/trace-pr: "567"
 ```
 
-These become labels in the trace hop, allowing correlation with external systems:
+---
 
-```json
-{"kind": "Deployment", "name": "prod", "labels": {"ticket": "JIRA-123", "pr": "567"}, ...}
-```
+## Installation Options
 
-## Installation
-
-### Prerequisites
-
-- Kubernetes 1.25+
-- Helm 3.0+
-- cert-manager (optional, for TLS certificate management)
-
-### Using Helm
+### Helm (Recommended)
 
 ```bash
-# Add the Helm repository (coming soon)
-# helm repo add kausality https://kausality-io.github.io/kausality
-
-# Install from source
 helm install kausality ./charts/kausality \
   --namespace kausality-system \
-  --create-namespace
+  --create-namespace \
+  --set backend.enabled=true  # Enable drift logging
 ```
 
-## Configuration
-
-Kausality uses Custom Resource Definitions (CRDs) to configure drift detection policies. This approach allows dynamic policy management without redeploying the webhook.
-
-### Quick Start
-
-After installing Kausality, create a policy to enable drift detection:
-
-```yaml
-apiVersion: kausality.io/v1alpha1
-kind: Kausality
-metadata:
-  name: apps-policy
-spec:
-  # Which resources to track
-  resources:
-    - apiGroups: ["apps"]
-      resources: ["deployments", "replicasets", "statefulsets"]
-  # Drift detection mode: log or enforce
-  mode: log
-```
-
-Apply the policy:
+### With cert-manager
 
 ```bash
-kubectl apply -f policy.yaml
+helm install kausality ./charts/kausality \
+  --namespace kausality-system \
+  --create-namespace \
+  --set certificates.selfSigned.enabled=false \
+  --set certificates.certManager.enabled=true \
+  --set certificates.certManager.issuerRef.name=my-issuer \
+  --set certificates.certManager.issuerRef.kind=ClusterIssuer
 ```
 
-### Kausality CRD
+### Key Helm Values
 
-The `Kausality` CRD defines which resources to monitor and how to handle drift.
+| Value | Default | Description |
+|-------|---------|-------------|
+| `backend.enabled` | `false` | Deploy the drift report logger |
+| `controller.enabled` | `true` | Auto-manage webhook config from CRDs |
+| `certificates.selfSigned.enabled` | `true` | Use Helm-generated certs |
+| `logging.level` | `info` | Log level (debug, info, warn, error) |
 
-```yaml
-apiVersion: kausality.io/v1alpha1
-kind: Kausality
-metadata:
-  name: production-policy
-spec:
-  # Resources to track (required)
-  resources:
-    # Track all resources in apps group except DaemonSets
-    - apiGroups: ["apps"]
-      resources: ["*"]
-      excluded: ["daemonsets"]
-    # Track specific custom resources
-    - apiGroups: ["example.com"]
-      resources: ["ekscluster", "nodepools"]
+See [values.yaml](charts/kausality/values.yaml) for all options.
 
-  # Namespace filtering (optional)
-  # If omitted, all namespaces are tracked (except system namespaces)
-  namespaces:
-    # Explicit list of namespaces
-    names: ["production", "staging"]
-    # Or use label selector (mutually exclusive with names)
-    # selector:
-    #   matchLabels:
-    #     env: production
-    # Always excluded, even if matching above
-    excluded: ["kube-system"]
+---
 
-  # Object label selector (optional)
-  # Only track objects matching these labels
-  objectSelector:
-    matchLabels:
-      managed-by: kausality
+## Documentation
 
-  # Default mode: log or enforce
-  mode: log
+**Concepts:**
+- [Design Overview](doc/design/INDEX.md) — Core concepts and architecture
+- [Drift Detection](doc/design/DRIFT_DETECTION.md) — How controller identification works
+- [Approvals](doc/design/APPROVALS.md) — Approval modes, rejections, freeze/snooze
 
-  # Per-resource/namespace mode overrides (optional)
-  # First match wins
-  overrides:
-    - namespaces: ["production"]
-      mode: enforce
-    - apiGroups: ["apps"]
-      resources: ["deployments"]
-      namespaces: ["staging"]
-      mode: enforce
-```
+**Reference:**
+- [Kausality CRD](doc/design/KAUSALITY_CRD.md) — Full CRD specification
+- [Callbacks](doc/design/CALLBACKS.md) — DriftReport API for integrations
+- [Architecture Decisions](doc/ADR.md) — Design rationale and trade-offs
 
-### Policy Fields
-
-| Field | Description |
-|-------|-------------|
-| `resources` | List of API groups and resources to track. Use `"*"` for all resources in a group. |
-| `resources[].excluded` | Resources to exclude when using `"*"`. Only valid with wildcard. |
-| `namespaces.names` | Explicit namespace list. Mutually exclusive with `selector`. |
-| `namespaces.selector` | Label selector for namespaces. Mutually exclusive with `names`. |
-| `namespaces.excluded` | Namespaces to always skip, even if matching above. |
-| `objectSelector` | Only track objects matching these labels. |
-| `mode` | Default mode: `log` (detect and warn) or `enforce` (block drift). |
-| `overrides` | Fine-grained mode overrides by namespace/resource. First match wins. |
-
-### Drift Detection Modes
-
-| Mode | Behavior |
-|------|----------|
-| `log` | Drift is detected and logged, warnings added to response, but requests are allowed |
-| `enforce` | Drift without approval is denied with an error message |
-
-In `log` mode, drift warnings are returned via the admission response `warnings` field, which kubectl and other clients display to users.
-
-### Multiple Policies
-
-Multiple `Kausality` resources can coexist. When policies overlap, the most specific policy wins based on:
-1. Explicit namespace names over selectors
-2. Specific resource lists over wildcards
-3. Object selectors over no selectors
-
-### Helm Values
-
-See [charts/kausality/values.yaml](charts/kausality/values.yaml) for Helm configuration options (replicas, resources, certificates, etc.). Policy configuration is done via CRDs, not Helm values.
-
-### Controller and Security
-
-The Kausality controller automatically manages webhook configuration and RBAC based on your policies. It requires broad permissions (`*/*`) to create per-policy ClusterRoles.
-
-This is not an additional security risk: the controller already manages `MutatingWebhookConfiguration`, which can intercept any API request — effectively privileged access.
-
-**Disabling the controller:** If your security posture requires it, disable the controller and manage webhook rules and RBAC manually:
-
-```yaml
-# values.yaml
-controller:
-  enabled: false
-```
-
-See [Kausality CRD Design](doc/design/KAUSALITY_CRD.md#disabling-the-controller) for manual configuration examples.
+---
 
 ## Development
 
-### Prerequisites
-
-- Go 1.25+
-- Docker (for building images)
-- kubectl configured for a test cluster
-- [kind](https://kind.sigs.k8s.io/) (optional, for local testing)
-
-### Building
-
 ```bash
-# Build the webhook binary
+# Build
 make build
 
 # Run tests
 make test
 
-# Run linter
-make lint
-
-# Build Docker image
-make docker-build
-```
-
-### Running Locally
-
-```bash
-# Run the webhook locally (requires kubeconfig)
-make run
-```
-
-### Testing
-
-```bash
-# Run unit tests
-make test
-
-# Run envtest integration tests (real API server)
+# Run envtest integration tests
 make envtest
 
-# Run tests with verbose output
-make test-verbose
+# Run E2E tests (requires cluster)
+make e2e
+
+# Lint
+make lint
+```
+
+### Local Development with Tilt
+
+```bash
+# Start local development (auto-rebuilds on changes)
+tilt up
 ```
 
 ### Project Structure
 
 ```
 kausality/
-├── api/
-│   └── v1alpha1/                # CRD types (Kausality)
+├── api/v1alpha1/           # CRD types
 ├── cmd/
-│   ├── kausality-webhook/       # Admission webhook server
-│   ├── kausality-controller/    # Policy controller (reconciles CRDs, manages webhook config)
-│   ├── kausality-backend-log/   # Backend that logs DriftReports as YAML
-│   └── kausality-backend-tui/   # Backend with interactive TUI
+│   ├── kausality-webhook/      # Admission webhook
+│   ├── kausality-controller/   # Policy controller
+│   └── kausality-backend-*/    # Backend implementations
 ├── pkg/
-│   ├── admission/               # Admission webhook handler
-│   ├── approval/                # Approval/rejection annotation handling
-│   ├── backend/                 # Backend server and TUI components
-│   ├── callback/                # Drift notification webhook callbacks
-│   │   └── v1alpha1/            # DriftReport API types
-│   ├── config/                  # Configuration types and loading
-│   ├── controller/              # Controller identification via user hash tracking
-│   ├── drift/                   # Core drift detection logic
-│   ├── policy/                  # Policy controller and store
-│   ├── trace/                   # Request trace propagation
-│   └── webhook/                 # Webhook server
-├── charts/
-│   └── kausality/               # Helm chart
-│       └── crds/                # CRD manifests
-└── doc/
-    └── design/                  # Design specification
+│   ├── admission/          # Webhook handler
+│   ├── drift/              # Core drift detection
+│   ├── policy/             # Policy store and controller
+│   └── ...
+└── charts/kausality/       # Helm chart
 ```
 
-### Architecture
-
-Kausality consists of two main components:
-
-| Component | Binary | Purpose |
-|-----------|--------|---------|
-| **Webhook** | `kausality-webhook` | Admission webhook that intercepts mutations and detects drift |
-| **Controller** | `kausality-controller` | Watches Kausality CRDs and reconciles webhook configuration |
-
-**RBAC:**
-
-| ClusterRole | Purpose |
-|-------------|---------|
-| `kausality-webhook` | Read Kausality policies and namespaces |
-| `kausality-webhook-resources` | Aggregated access to tracked resources (populated by controller) |
-| `kausality-controller` | Manage CRDs, webhook config, and per-policy ClusterRoles |
-
-## Documentation
-
-**Design:**
-- [Design Overview](doc/design/INDEX.md) — Core concepts and quick reference
-- [Kausality CRD](doc/design/KAUSALITY_CRD.md) — Policy configuration, resource selection, precedence rules
-- [Drift Detection](doc/design/DRIFT_DETECTION.md) — Controller identification, annotation protection, lifecycle phases
-- [Approvals](doc/design/APPROVALS.md) — Approval/rejection annotations, modes, freeze/snooze
-- [Tracing](doc/design/TRACING.md) — Request trace propagation through controller hierarchy
-- [Callbacks](doc/design/CALLBACKS.md) — Drift notification webhooks, DriftReport API
-- [Deployment](doc/design/DEPLOYMENT.md) — Webhook deployment, Helm configuration
-
-**Reference:**
-- [Architecture Decisions](doc/ADR.md) — Rationale, trade-offs, alternatives
-- [Roadmap](doc/ROADMAP.md) — Implementation phases and status
+---
 
 ## Roadmap
 
-- [x] **Phase 1**: Logging only
-  - Detect drift via generation/observedGeneration comparison
-  - Controller identification via user hash tracking (correlates status updaters with spec updaters)
-  - Log when drift would be blocked
-  - Support both library mode and webhook mode
+- [x] Drift detection via generation comparison
+- [x] Controller identification via user hash tracking
+- [x] Request trace propagation
+- [x] Per-object approvals and rejections
+- [x] Enforce mode with per-resource configuration
+- [x] DriftReport callbacks and backends
+- [x] Kausality CRD for policy configuration
+- [ ] Slack integration
+- [ ] UI dashboard
 
-- [x] **Phase 2**: Request-trace annotation propagation
-  - Trace causal chain through controller hierarchy
-  - New origins for different actors, extend for controller hops
-
-- [x] **Phase 3**: Per-object approval annotations
-  - [x] Approval types (once, generation, always)
-  - [x] Rejection support
-  - [x] Approval checking in handler
-  - [x] Enforce mode (per-G/GR configuration with label selectors)
-  - [x] Approval pruning (mode=once consumed after use)
-
-- [x] **Phase 4**: Drift notification webhook callbacks
-  - [x] DriftReport API (kausality.io/v1alpha1)
-  - [x] Content-based deduplication
-  - [x] Backend implementations (log, TUI)
-  - [x] Helm chart integration
-
-- [ ] **Phase 5**: Kausality CRD (in progress)
-  - [x] Kausality CRD for policy configuration
-  - [x] CEL validation rules
-  - [x] Policy controller for webhook configuration
-  - [x] Automatic RBAC generation (per-policy ClusterRoles with aggregation)
-  - [ ] E2E tests with CRD-based policies
-
-- [ ] **Phase 6**: Slack integration
+---
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE) for details.
+Apache 2.0 — see [LICENSE](LICENSE).
