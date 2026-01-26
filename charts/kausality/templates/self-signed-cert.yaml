@@ -70,7 +70,7 @@ webhooks:
         apiVersions: ["*"]
         resources:
           {{- range .resources }}
-          - {{ . }}/status
+          - "{{ . }}/status"
           {{- end }}
         operations:
           - UPDATE
