@@ -44,9 +44,10 @@ type Config struct {
 	// CallbackSender sends drift reports to webhook endpoints.
 	// If nil, drift callbacks are disabled.
 	CallbackSender callback.ReportSender
-	// PolicyStore provides CRD-based policy configuration.
+	// PolicyResolver provides policy configuration for drift detection.
+	// Can be a *policy.Store (CRD-based) or *policy.StaticResolver (in-memory).
 	// If nil, falls back to DriftConfig.
-	PolicyStore *policy.Store
+	PolicyResolver policy.Resolver
 }
 
 // Server is a standalone webhook server for drift detection.
@@ -98,7 +99,7 @@ func (s *Server) Register() {
 		Log:            s.log,
 		DriftConfig:    s.config.DriftConfig,
 		CallbackSender: s.config.CallbackSender,
-		PolicyStore:    s.config.PolicyStore,
+		PolicyResolver: s.config.PolicyResolver,
 	})
 
 	s.webhookServer.Register("/mutate", &webhook.Admission{Handler: handler})

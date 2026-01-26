@@ -38,6 +38,7 @@ func TestCallback_DriftReportSentOnDetection(t *testing.T) {
 	// Create a mock webhook server to receive drift reports
 	var receivedReports []*v1alpha1.DriftReport
 	var callCount atomic.Int32
+	var mu sync.Mutex
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount.Add(1)
@@ -49,7 +50,9 @@ func TestCallback_DriftReportSentOnDetection(t *testing.T) {
 			return
 		}
 
+		mu.Lock()
 		receivedReports = append(receivedReports, &report)
+		mu.Unlock()
 
 		response := v1alpha1.DriftReportResponse{Acknowledged: true}
 		w.Header().Set("Content-Type", "application/json")

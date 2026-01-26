@@ -40,7 +40,7 @@ type Handler struct {
 	controllerTracker *controller.Tracker
 	lifecycleDetector *drift.LifecycleDetector
 	config            *config.Config
-	policyStore       *policy.Store
+	policyResolver    policy.Resolver
 	log               logr.Logger
 }
 
@@ -49,12 +49,13 @@ type Config struct {
 	Client client.Client
 	Log    logr.Logger
 	// DriftConfig provides per-resource drift detection configuration (legacy).
-	// Used as fallback when PolicyStore is nil or has no matching policies.
+	// Used as fallback when PolicyResolver is nil or has no matching policies.
 	// If nil, defaults to log mode for all resources.
 	DriftConfig *config.Config
-	// PolicyStore provides CRD-based policy configuration.
-	// Takes precedence over DriftConfig when set and has matching policies.
-	PolicyStore *policy.Store
+	// PolicyResolver provides policy configuration for drift detection.
+	// Can be a *policy.Store (CRD-based) or *policy.StaticResolver (in-memory).
+	// Takes precedence over DriftConfig when set.
+	PolicyResolver policy.Resolver
 	// CallbackSender sends drift reports to webhook endpoints.
 	// If nil, drift callbacks are disabled.
 	CallbackSender callback.ReportSender
@@ -76,7 +77,7 @@ func NewHandler(cfg Config) *Handler {
 		controllerTracker: controller.NewTracker(cfg.Client, log),
 		lifecycleDetector: drift.NewLifecycleDetector(),
 		config:            driftConfig,
-		policyStore:       cfg.PolicyStore,
+		policyResolver:    cfg.PolicyResolver,
 		log:               log,
 	}
 }
@@ -979,8 +980,8 @@ func (h *Handler) getNamespaceMetadata(ctx context.Context, namespace string) (l
 // resolveMode determines the drift detection mode for a resource.
 // Precedence: object annotation > namespace annotation > CRD policy > legacy config.
 func (h *Handler) resolveMode(gvk schema.GroupVersionKind, namespace string, nsLabels, objLabels, objAnnotations, nsAnnotations map[string]string) string {
-	// If policy store is available, use it
-	if h.policyStore != nil {
+	// If policy resolver is available, use it
+	if h.policyResolver != nil {
 		// Convert Kind to resource (lowercase plural)
 		resource := kindToResource(gvk.Kind)
 		policyCtx := policy.ResourceContext{
@@ -993,7 +994,7 @@ func (h *Handler) resolveMode(gvk schema.GroupVersionKind, namespace string, nsL
 			NamespaceLabels: nsLabels,
 			ObjectLabels:    objLabels,
 		}
-		mode := h.policyStore.ResolveMode(policyCtx, objAnnotations, nsAnnotations)
+		mode := h.policyResolver.ResolveMode(policyCtx, objAnnotations, nsAnnotations)
 		return string(mode)
 	}
 

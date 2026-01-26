@@ -166,7 +166,7 @@ func main() {
 		HealthProbeBindAddress: healthProbeBindAddress,
 		DriftConfig:            driftConfig,
 		CallbackSender:         callbackSender,
-		PolicyStore:            policyStore,
+		PolicyResolver:         policyStore,
 	})
 
 	server.Register()
