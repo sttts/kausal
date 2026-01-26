@@ -29,22 +29,22 @@ func TestApproval_ModeAlways(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "approval-always-deploy")
+	deploy := createDeploymentUnit(t, ctx, "approval-always-deploy")
 
 	// Create child ReplicaSet FIRST (so we know its name)
-	rs := createReplicaSetWithOwner(t, ctx, "approval-always-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "approval-always-rs", deploy)
 
 	// Set parent as ready (gen == obsGen) - drift scenario
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Add approval annotation using ACTUAL RS name
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	approvals := []approval.Approval{
@@ -57,12 +57,12 @@ func TestApproval_ModeAlways(t *testing.T) {
 	}
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with approval: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -92,22 +92,22 @@ func TestApproval_ModeOnce(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "approval-once-deploy")
+	deploy := createDeploymentUnit(t, ctx, "approval-once-deploy")
 
 	// Create child ReplicaSet FIRST
-	rs := createReplicaSetWithOwner(t, ctx, "approval-once-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "approval-once-rs", deploy)
 
 	// Set parent as ready
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch to get generation AFTER status update (status update doesn't bump generation)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -122,12 +122,12 @@ func TestApproval_ModeOnce(t *testing.T) {
 	}
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with approval: %v", err)
 	}
 
 	// Re-fetch (generation bumps due to annotation update)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -169,22 +169,22 @@ func TestApproval_ModeGeneration(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "approval-gen-deploy")
+	deploy := createDeploymentUnit(t, ctx, "approval-gen-deploy")
 
 	// Create child ReplicaSet FIRST
-	rs := createReplicaSetWithOwner(t, ctx, "approval-gen-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "approval-gen-rs", deploy)
 
 	// Set parent as ready
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -200,12 +200,12 @@ func TestApproval_ModeGeneration(t *testing.T) {
 	}
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with approval: %v", err)
 	}
 
 	// Re-fetch (generation bumped)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -232,22 +232,22 @@ func TestApproval_StaleGeneration(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "approval-stale-deploy")
+	deploy := createDeploymentUnit(t, ctx, "approval-stale-deploy")
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "approval-stale-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "approval-stale-rs", deploy)
 
 	// Set as ready
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -263,12 +263,12 @@ func TestApproval_StaleGeneration(t *testing.T) {
 	}
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with approval: %v", err)
 	}
 
 	// Re-fetch (generation bumps due to update)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -296,22 +296,22 @@ func TestRejection_BlocksDrift(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "rejection-deploy")
+	deploy := createDeploymentUnit(t, ctx, "rejection-deploy")
 
 	// Create child ReplicaSet FIRST
-	rs := createReplicaSetWithOwner(t, ctx, "rejection-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "rejection-rs", deploy)
 
 	// Set parent as ready
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -326,12 +326,12 @@ func TestRejection_BlocksDrift(t *testing.T) {
 	}
 	annotations[approval.RejectionsAnnotation] = string(rejectionsJSON)
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with rejection: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -361,22 +361,22 @@ func TestRejection_WinsOverApproval(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "reject-wins-deploy")
+	deploy := createDeploymentUnit(t, ctx, "reject-wins-deploy")
 
 	// Create child ReplicaSet FIRST
-	rs := createReplicaSetWithOwner(t, ctx, "reject-wins-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "reject-wins-rs", deploy)
 
 	// Set parent as ready
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -398,12 +398,12 @@ func TestRejection_WinsOverApproval(t *testing.T) {
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	annotations[approval.RejectionsAnnotation] = string(rejectionsJSON)
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Re-fetch
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -435,13 +435,13 @@ func TestApprovalConsumed_ModeOnce(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "consume-deploy")
+	deploy := createDeploymentUnit(t, ctx, "consume-deploy")
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "consume-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "consume-rs", deploy)
 
 	// Get current generation for the approval
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -458,21 +458,21 @@ func TestApprovalConsumed_ModeOnce(t *testing.T) {
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with approval: %v", err)
 	}
 
 	// Set parent as ready AFTER annotation update (drift scenario: gen == obsGen)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Verify approval exists before handler
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	beforeApprovals := deploy.GetAnnotations()[approval.ApprovalsAnnotation]
@@ -489,7 +489,7 @@ func TestApprovalConsumed_ModeOnce(t *testing.T) {
 
 	// Create handler (log mode - approval should still be consumed)
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    ctrl.Log.WithName("test-consume"),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -499,7 +499,7 @@ func TestApprovalConsumed_ModeOnce(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -549,7 +549,7 @@ func TestApprovalConsumed_ModeOnce(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify approval was consumed (removed from parent)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment after handler: %v", err)
 	}
 	afterApprovals := deploy.GetAnnotations()[approval.ApprovalsAnnotation]
@@ -575,13 +575,13 @@ func TestApprovalNotConsumed_ModeAlways(t *testing.T) {
 	ctx := context.Background()
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "always-deploy")
+	deploy := createDeploymentUnit(t, ctx, "always-deploy")
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "always-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "always-rs", deploy)
 
 	// Add mode=always approval annotation
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	approvals := []approval.Approval{
@@ -594,21 +594,21 @@ func TestApprovalNotConsumed_ModeAlways(t *testing.T) {
 	}
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment with approval: %v", err)
 	}
 
 	// Set parent as ready AFTER annotation update
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch and find controller manager
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	var controllerManager string
@@ -621,7 +621,7 @@ func TestApprovalNotConsumed_ModeAlways(t *testing.T) {
 
 	// Create handler
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client: k8sClient,
+		Client: k8sClientUnit,
 		Log:    ctrl.Log.WithName("test-always"),
 		DriftConfig: &config.Config{
 			DriftDetection: config.DriftDetectionConfig{
@@ -631,7 +631,7 @@ func TestApprovalNotConsumed_ModeAlways(t *testing.T) {
 	})
 
 	// Re-fetch RS
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -669,7 +669,7 @@ func TestApprovalNotConsumed_ModeAlways(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify approval was NOT consumed (mode=always should persist)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment after handler: %v", err)
 	}
 	afterApprovals := deploy.GetAnnotations()[approval.ApprovalsAnnotation]

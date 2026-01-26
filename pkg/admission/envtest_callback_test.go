@@ -68,16 +68,16 @@ func TestCallback_DriftReportSentOnDetection(t *testing.T) {
 	}
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "callback-deploy")
+	deploy := createDeploymentUnit(t, ctx, "callback-deploy")
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "callback-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "callback-rs", deploy)
 
 	// Mark parent as stable (initialized with matching observedGeneration) - NO approvals
-	markParentStable(t, ctx, deploy)
+	markParentStableUnit(t, ctx, deploy)
 
 	// Re-fetch to get managedFields
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -92,7 +92,7 @@ func TestCallback_DriftReportSentOnDetection(t *testing.T) {
 
 	// Create handler with callback sender
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client:         k8sClient,
+		Client:         k8sClientUnit,
 		Log:            ctrl.Log.WithName("test-callback"),
 		CallbackSender: callbackSender,
 		DriftConfig: &config.Config{
@@ -103,7 +103,7 @@ func TestCallback_DriftReportSentOnDetection(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"
@@ -223,13 +223,13 @@ func TestCallback_ResolvedSentOnApproval(t *testing.T) {
 	}
 
 	// Create parent deployment
-	deploy := createDeployment(t, ctx, "resolved-deploy")
+	deploy := createDeploymentUnit(t, ctx, "resolved-deploy")
 
 	// Create child ReplicaSet
-	rs := createReplicaSetWithOwner(t, ctx, "resolved-rs", deploy)
+	rs := createReplicaSetWithOwnerUnit(t, ctx, "resolved-rs", deploy)
 
 	// Add approval annotation FIRST (this bumps generation)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	approvals := []approval.Approval{
@@ -243,21 +243,21 @@ func TestCallback_ResolvedSentOnApproval(t *testing.T) {
 	annotations[approval.ApprovalsAnnotation] = approvalsJSON
 	annotations[controller.PhaseAnnotation] = controller.PhaseValueInitialized
 	deploy.SetAnnotations(annotations)
-	if err := k8sClient.Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update deployment: %v", err)
 	}
 
 	// Set parent as ready AFTER annotation update (drift scenario: gen == obsGen)
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 	deploy.Status.ObservedGeneration = deploy.Generation
-	if err := k8sClient.Status().Update(ctx, deploy); err != nil {
+	if err := k8sClientUnit.Status().Update(ctx, deploy); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Re-fetch to get managedFields
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
@@ -272,7 +272,7 @@ func TestCallback_ResolvedSentOnApproval(t *testing.T) {
 
 	// Create handler with callback sender
 	handler := kadmission.NewHandler(kadmission.Config{
-		Client:         k8sClient,
+		Client:         k8sClientUnit,
 		Log:            ctrl.Log.WithName("test-resolved"),
 		CallbackSender: callbackSender,
 		DriftConfig: &config.Config{
@@ -283,7 +283,7 @@ func TestCallback_ResolvedSentOnApproval(t *testing.T) {
 	})
 
 	// Re-fetch RS and set TypeMeta
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
 		t.Fatalf("failed to get rs: %v", err)
 	}
 	rs.APIVersion = "apps/v1"

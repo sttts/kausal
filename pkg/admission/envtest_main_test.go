@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -28,21 +27,81 @@ import (
 	"github.com/kausality-io/kausality/pkg/admission"
 )
 
-// Shared test environment
+// Shared test environments
 var (
+	// Environment WITH webhook - for TestWebhook_* tests
 	cfg       *rest.Config
 	k8sClient client.Client
 	testEnv   *envtest.Environment
-	scheme    = runtime.NewScheme()
 	testNS    string
-	ctx       context.Context
-	cancel    context.CancelFunc
+
+	// Environment WITHOUT webhook - for unit tests that call handler directly
+	cfgUnit       *rest.Config
+	k8sClientUnit client.Client
+	testEnvUnit   *envtest.Environment
+	testNSUnit    string
+
+	scheme = runtime.NewScheme()
+	ctx    context.Context
+	cancel context.CancelFunc
 )
 
 func TestMain(m *testing.M) {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	ctx, cancel = context.WithCancel(context.Background())
 
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	// Start environment WITHOUT webhook (for unit tests)
+	if err := startUnitEnv(); err != nil {
+		panic(fmt.Sprintf("failed to start unit env: %v", err))
+	}
+
+	// Start environment WITH webhook (for webhook tests)
+	if err := startWebhookEnv(); err != nil {
+		panic(fmt.Sprintf("failed to start webhook env: %v", err))
+	}
+
+	code := m.Run()
+
+	// Cleanup
+	cancel()
+	_ = k8sClient.Delete(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNS}})
+	_ = k8sClientUnit.Delete(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNSUnit}})
+	_ = testEnv.Stop()
+	_ = testEnvUnit.Stop()
+
+	os.Exit(code)
+}
+
+// startUnitEnv starts envtest WITHOUT webhook for unit tests
+func startUnitEnv() error {
+	testEnvUnit = &envtest.Environment{}
+
+	var err error
+	cfgUnit, err = testEnvUnit.Start()
+	if err != nil {
+		return fmt.Errorf("failed to start envtest (unit): %w", err)
+	}
+
+	k8sClientUnit, err = client.New(cfgUnit, client.Options{Scheme: scheme})
+	if err != nil {
+		return fmt.Errorf("failed to create client (unit): %w", err)
+	}
+
+	// Create namespace for unit tests
+	testNSUnit = fmt.Sprintf("kausality-unit-%d", time.Now().UnixNano())
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNSUnit}}
+	if err := k8sClientUnit.Create(ctx, ns); err != nil {
+		return fmt.Errorf("failed to create test namespace (unit): %w", err)
+	}
+
+	return nil
+}
+
+// startWebhookEnv starts envtest WITH webhook for webhook tests
+func startWebhookEnv() error {
 	// Build mutating webhook configuration
 	failPolicy := admissionv1.Fail
 	sideEffects := admissionv1.SideEffectClassNone
@@ -114,15 +173,12 @@ func TestMain(m *testing.M) {
 	var err error
 	cfg, err = testEnv.Start()
 	if err != nil {
-		panic(fmt.Sprintf("failed to start envtest: %v", err))
+		return fmt.Errorf("failed to start envtest (webhook): %w", err)
 	}
-
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
-		panic(fmt.Sprintf("failed to create client: %v", err))
+		return fmt.Errorf("failed to create client (webhook): %w", err)
 	}
 
 	// Start webhook server
@@ -151,7 +207,6 @@ func TestMain(m *testing.M) {
 	dialer := &net.Dialer{Timeout: time.Second}
 	addrPort := fmt.Sprintf("%s:%d", webhookInstallOptions.LocalServingHost, webhookInstallOptions.LocalServingPort)
 
-	// Wait for the server to accept connections
 	timeout := time.After(10 * time.Second)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -160,7 +215,7 @@ waitLoop:
 	for {
 		select {
 		case <-timeout:
-			panic("timed out waiting for webhook server to be ready")
+			return fmt.Errorf("timed out waiting for webhook server")
 		case <-ticker.C:
 			conn, err := tls.DialWithDialer(dialer, "tcp", addrPort, &tls.Config{InsecureSkipVerify: true})
 			if err == nil {
@@ -170,26 +225,12 @@ waitLoop:
 		}
 	}
 
-	// Create a shared namespace for tests
-	testNS = fmt.Sprintf("kausality-test-%d", time.Now().UnixNano())
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: testNS},
-	}
+	// Create namespace for webhook tests
+	testNS = fmt.Sprintf("kausality-webhook-%d", time.Now().UnixNano())
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNS}}
 	if err := k8sClient.Create(ctx, ns); err != nil {
-		panic(fmt.Sprintf("failed to create test namespace: %v", err))
+		return fmt.Errorf("failed to create test namespace (webhook): %w", err)
 	}
 
-	code := m.Run()
-
-	// Cleanup
-	cancel()
-	_ = k8sClient.Delete(context.Background(), ns)
-	_ = testEnv.Stop()
-
-	os.Exit(code)
-}
-
-// certDir returns the webhook cert directory for tests that need it.
-func certDir() string {
-	return filepath.Join(testEnv.WebhookInstallOptions.LocalServingCertDir)
+	return nil
 }
