@@ -40,6 +40,12 @@ A few days later, we rolled out an update of our controllers. One composition ch
 
 The system had no concept of *why* the cluster looked the way it did — only what the declarative snapshot said. No bug. Hundreds of nodes gone. An expensive incident 💸.
 
+**Two drifts collided:**
+1. **Human-caused drift** — manual scaling in AWS created a gap between reality (1000 nodes) and declared Terraform state (fewer nodes). The intent was never recorded.
+2. **Software-caused drift** — a controller update removed an unrelated AWS add-on, intended as a no-op. But removing the add-on triggered Terraform reconciliation.
+
+These drifts were unrelated but connected by consequence: the second caused Terraform to run, which then "fixed" the first by destroying nodes to match stale declared state.
+
 This story is about Terraform, but the same applies to Crossplane, Pulumi, or any declarative IaC tool. It's a foundational problem: **declarative systems converge to declared state, not intended state.** And we all want these systems to work without a human in the loop.
 
 The downstream IaC system applies blindly. It doesn't know about intent — it applies what is declared. If the latter changes although it was intended as a no-op, disaster hits your fleet. Automated. Fast. Disastrous.
