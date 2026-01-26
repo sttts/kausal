@@ -18,12 +18,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	kausalityv1alpha1 "github.com/kausality-io/kausality/api/v1alpha1"
 	"github.com/kausality-io/kausality/pkg/approval"
 	"github.com/kausality-io/kausality/pkg/callback"
 	"github.com/kausality-io/kausality/pkg/callback/v1alpha1"
 	"github.com/kausality-io/kausality/pkg/config"
 	"github.com/kausality-io/kausality/pkg/controller"
 	"github.com/kausality-io/kausality/pkg/drift"
+	"github.com/kausality-io/kausality/pkg/policy"
 	"github.com/kausality-io/kausality/pkg/trace"
 )
 
@@ -38,6 +40,7 @@ type Handler struct {
 	controllerTracker *controller.Tracker
 	lifecycleDetector *drift.LifecycleDetector
 	config            *config.Config
+	policyStore       *policy.Store
 	log               logr.Logger
 }
 
@@ -45,9 +48,13 @@ type Handler struct {
 type Config struct {
 	Client client.Client
 	Log    logr.Logger
-	// DriftConfig provides per-resource drift detection configuration.
+	// DriftConfig provides per-resource drift detection configuration (legacy).
+	// Used as fallback when PolicyStore is nil or has no matching policies.
 	// If nil, defaults to log mode for all resources.
 	DriftConfig *config.Config
+	// PolicyStore provides CRD-based policy configuration.
+	// Takes precedence over DriftConfig when set and has matching policies.
+	PolicyStore *policy.Store
 	// CallbackSender sends drift reports to webhook endpoints.
 	// If nil, drift callbacks are disabled.
 	CallbackSender callback.ReportSender
@@ -69,6 +76,7 @@ func NewHandler(cfg Config) *Handler {
 		controllerTracker: controller.NewTracker(cfg.Client, log),
 		lifecycleDetector: drift.NewLifecycleDetector(),
 		config:            driftConfig,
+		policyStore:       cfg.PolicyStore,
 		log:               log,
 	}
 }
@@ -213,7 +221,7 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	}
 
 	// Determine enforce mode using annotation-based resolution
-	// Precedence: object annotation > namespace annotation > config
+	// Precedence: object annotation > namespace annotation > CRD policy > legacy config
 	objAnnotations := obj.GetAnnotations()
 	if objAnnotations == nil {
 		objAnnotations = map[string]string{}
@@ -221,8 +229,8 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	if nsAnnotations == nil {
 		nsAnnotations = map[string]string{}
 	}
-	driftMode := h.config.ResolveModeWithAnnotations(objAnnotations, nsAnnotations, resourceCtx)
-	enforceMode := driftMode == config.ModeEnforce
+	driftMode := h.resolveMode(gvk, obj.GetNamespace(), resourceCtx.NamespaceLabels, obj.GetLabels(), objAnnotations, nsAnnotations)
+	enforceMode := driftMode == string(kausalityv1alpha1.ModeEnforce)
 
 	if driftResult.DriftDetected {
 		// Check for approvals when drift is detected
@@ -966,6 +974,49 @@ func (h *Handler) getNamespaceMetadata(ctx context.Context, namespace string) (l
 		return nil, nil, err
 	}
 	return ns.GetLabels(), ns.GetAnnotations(), nil
+}
+
+// resolveMode determines the drift detection mode for a resource.
+// Precedence: object annotation > namespace annotation > CRD policy > legacy config.
+func (h *Handler) resolveMode(gvk schema.GroupVersionKind, namespace string, nsLabels, objLabels, objAnnotations, nsAnnotations map[string]string) string {
+	// If policy store is available, use it
+	if h.policyStore != nil {
+		// Convert Kind to resource (lowercase plural)
+		resource := kindToResource(gvk.Kind)
+		policyCtx := policy.ResourceContext{
+			GVR: schema.GroupVersionResource{
+				Group:    gvk.Group,
+				Version:  gvk.Version,
+				Resource: resource,
+			},
+			Namespace:       namespace,
+			NamespaceLabels: nsLabels,
+			ObjectLabels:    objLabels,
+		}
+		mode := h.policyStore.ResolveMode(policyCtx, objAnnotations, nsAnnotations)
+		return string(mode)
+	}
+
+	// Fallback to legacy config
+	resourceCtx := config.ResourceContext{
+		GVK:             gvk,
+		Namespace:       namespace,
+		NamespaceLabels: nsLabels,
+		ObjectLabels:    objLabels,
+	}
+	return h.config.ResolveModeWithAnnotations(objAnnotations, nsAnnotations, resourceCtx)
+}
+
+// kindToResource converts a Kind to the conventional resource name.
+func kindToResource(kind string) string {
+	// Simple lowercase + 's' suffix (works for most resources)
+	// Note: This doesn't handle irregular plurals (e.g., "Ingress" -> "ingresses")
+	// but works for common cases like Deployment -> deployments
+	lower := strings.ToLower(kind)
+	if strings.HasSuffix(lower, "s") || strings.HasSuffix(lower, "x") || strings.HasSuffix(lower, "ch") || strings.HasSuffix(lower, "sh") {
+		return lower + "es"
+	}
+	return lower + "s"
 }
 
 // extractParentStateFromObject extracts drift-relevant state from an object being used as a parent.
