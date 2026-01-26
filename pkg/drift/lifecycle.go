@@ -53,9 +53,9 @@ func (d *LifecycleDetector) DetectPhase(state *ParentState) LifecyclePhase {
 func (d *LifecycleDetector) checkInitialized(state *ParentState, detector InitializationDetector) bool {
 	switch detector {
 	case DetectByInitializedCondition:
-		return hasCondition(state.Conditions, ConditionTypeInitialized, metav1.ConditionTrue)
+		return hasConditionTrue(state.Conditions, ConditionTypeInitialized)
 	case DetectByReadyCondition:
-		return hasCondition(state.Conditions, ConditionTypeReady, metav1.ConditionTrue)
+		return hasConditionTrue(state.Conditions, ConditionTypeReady)
 	case DetectByObservedGeneration:
 		// For observedGeneration to indicate "initialized", we need:
 		// 1. HasObservedGeneration (gen == obsGen from condition)
@@ -69,18 +69,18 @@ func (d *LifecycleDetector) checkInitialized(state *ParentState, detector Initia
 		if !state.HasObservedGeneration {
 			return false
 		}
-		return hasCondition(state.Conditions, ConditionTypeReady, metav1.ConditionTrue) ||
-			hasCondition(state.Conditions, ConditionTypeAvailable, metav1.ConditionTrue) ||
-			hasCondition(state.Conditions, ConditionTypeInitialized, metav1.ConditionTrue)
+		return hasConditionTrue(state.Conditions, ConditionTypeReady) ||
+			hasConditionTrue(state.Conditions, ConditionTypeAvailable) ||
+			hasConditionTrue(state.Conditions, ConditionTypeInitialized)
 	default:
 		return false
 	}
 }
 
-// hasCondition checks if the conditions slice contains a condition with the given type and status.
-func hasCondition(conditions []metav1.Condition, conditionType string, status metav1.ConditionStatus) bool {
+// hasConditionTrue checks if the conditions slice contains a condition with the given type and status=True.
+func hasConditionTrue(conditions []metav1.Condition, conditionType string) bool {
 	for _, c := range conditions {
-		if c.Type == conditionType && c.Status == status {
+		if c.Type == conditionType && c.Status == metav1.ConditionTrue {
 			return true
 		}
 	}
