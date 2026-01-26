@@ -170,3 +170,38 @@ Backend-log service URL (for webhook to call)
 {{- define "kausality.backendServiceURL" -}}
 {{- printf "http://%s.%s.svc.cluster.local:%d/webhook" (include "kausality.backendFullname" .) .Release.Namespace (.Values.backend.service.port | int) }}
 {{- end }}
+
+{{/*
+Backend-tui fullname
+*/}}
+{{- define "kausality.backendTuiFullname" -}}
+{{- printf "%s-backend-tui" (include "kausality.fullname" .) }}
+{{- end }}
+
+{{/*
+Backend-tui labels
+*/}}
+{{- define "kausality.backendTuiLabels" -}}
+helm.sh/chart: {{ include "kausality.chart" . }}
+{{ include "kausality.backendTuiSelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Backend-tui selector labels
+*/}}
+{{- define "kausality.backendTuiSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kausality.name" . }}-backend-tui
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: backend-tui
+{{- end }}
+
+{{/*
+Backend-tui service URL (for webhook to call)
+*/}}
+{{- define "kausality.backendTuiServiceURL" -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d/webhook" (include "kausality.backendTuiFullname" .) .Release.Namespace (.Values.backendTui.service.port | int) }}
+{{- end }}

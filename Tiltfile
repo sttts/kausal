@@ -28,6 +28,13 @@ ko_build(
     deps=['./cmd/kausality-backend-log', './pkg'],
 )
 
+# Build the backend-tui image with ko
+ko_build(
+    'kausality-backend-tui',
+    './cmd/kausality-backend-tui',
+    deps=['./cmd/kausality-backend-tui', './pkg'],
+)
+
 # Deploy using Helm
 k8s_yaml(helm(
     './charts/kausality',
@@ -44,6 +51,9 @@ k8s_yaml(helm(
         'backend.image.repository=kausality-backend-log',
         'backend.image.tag=tilt',
         'backend.image.pullPolicy=Never',
+        'backendTui.image.repository=kausality-backend-tui',
+        'backendTui.image.tag=tilt',
+        'backendTui.image.pullPolicy=Never',
     ],
 ))
 
@@ -70,6 +80,12 @@ k8s_resource(
 
 k8s_resource(
     'kausality-backend-log',
+    resource_deps=['create-namespace', 'kausality-webhook'],
+    labels=['backend'],
+)
+
+k8s_resource(
+    'kausality-backend-tui',
     resource_deps=['create-namespace', 'kausality-webhook'],
     labels=['backend'],
 )

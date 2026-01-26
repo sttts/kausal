@@ -102,18 +102,27 @@ The controller will try to "fix" this back to the original replica count — and
 
 ### 4. Enable Drift Logging (Optional)
 
-To see detailed DriftReports, enable the backend:
+To see detailed DriftReports, enable a backend:
+
+```bash
+# Log backend - outputs DriftReports as YAML to stdout
+helm upgrade kausality ./charts/kausality \
+  --namespace kausality-system \
+  --set backend.enabled=true
+
+# View the drift logs
+kubectl logs -n kausality-system -l app.kubernetes.io/component=backend-log -f
+```
+
+**TUI backend** - interactive terminal UI for real-time drift monitoring:
 
 ```bash
 helm upgrade kausality ./charts/kausality \
   --namespace kausality-system \
-  --set backend.enabled=true
-```
+  --set backendTui.enabled=true
 
-View the drift logs:
-
-```bash
-kubectl logs -n kausality-system -l app.kubernetes.io/name=kausality-backend -f
+# Attach to the TUI
+kubectl attach -n kausality-system deploy/kausality-backend-tui -it
 ```
 
 ---
@@ -296,7 +305,8 @@ helm install kausality ./charts/kausality \
 
 | Value | Default | Description |
 |-------|---------|-------------|
-| `backend.enabled` | `false` | Deploy the drift report logger |
+| `backend.enabled` | `false` | Deploy the log backend (YAML to stdout) |
+| `backendTui.enabled` | `false` | Deploy the TUI backend (interactive terminal) |
 | `controller.enabled` | `true` | Auto-manage webhook config from CRDs |
 | `certificates.selfSigned.enabled` | `true` | Use Helm-generated certs |
 | `logging.level` | `info` | Log level (debug, info, warn, error) |

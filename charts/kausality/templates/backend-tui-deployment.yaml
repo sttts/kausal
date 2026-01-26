@@ -1,0 +1,95 @@
+{{- if .Values.backendTui.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kausality.backendTuiFullname" . }}
+  labels:
+    {{- include "kausality.backendTuiLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.backendTui.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kausality.backendTuiSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.backendTui.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kausality.backendTuiSelectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: backend-tui
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.backendTui.image.repository }}:{{ .Values.backendTui.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.backendTui.image.pullPolicy }}
+          stdin: true
+          tty: true
+          args:
+            - --addr=:{{ .Values.backendTui.service.port }}
+            {{- range .Values.backendTui.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- if or .Values.backendTui.extraEnv .Values.backendTui.extraEnvFrom }}
+          env:
+            {{- range .Values.backendTui.extraEnv }}
+            - name: {{ .name }}
+              {{- if .value }}
+              value: {{ .value | quote }}
+              {{- else if .valueFrom }}
+              valueFrom:
+                {{- toYaml .valueFrom | nindent 16 }}
+              {{- end }}
+            {{- end }}
+          {{- if .Values.backendTui.extraEnvFrom }}
+          envFrom:
+            {{- toYaml .Values.backendTui.extraEnvFrom | nindent 12 }}
+          {{- end }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backendTui.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.backendTui.resources | nindent 12 }}
+          {{- if .Values.backendTui.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml .Values.backendTui.extraVolumeMounts | nindent 12 }}
+          {{- end }}
+      {{- if .Values.backendTui.extraVolumes }}
+      volumes:
+        {{- toYaml .Values.backendTui.extraVolumes | nindent 8 }}
+      {{- end }}
+      {{- with .Values.backendTui.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.backendTui.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.backendTui.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

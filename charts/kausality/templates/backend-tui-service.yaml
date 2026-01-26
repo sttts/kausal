@@ -1,0 +1,17 @@
+{{- if .Values.backendTui.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kausality.backendTuiFullname" . }}
+  labels:
+    {{- include "kausality.backendTuiLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.backendTui.service.type }}
+  ports:
+    - port: {{ .Values.backendTui.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "kausality.backendTuiSelectorLabels" . | nindent 4 }}
+{{- end }}
