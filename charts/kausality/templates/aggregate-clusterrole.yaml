@@ -6,7 +6,7 @@ kind: ClusterRole
 metadata:
   name: {{ include "kausality.webhookFullname" . }}-resources
   labels:
-    {{- include "kausality.labels" . | nindent 4 }}
+    {{- include "kausality.webhookLabels" . | nindent 4 }}
 aggregationRule:
   clusterRoleSelectors:
     - matchLabels:

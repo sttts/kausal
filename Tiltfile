@@ -56,7 +56,7 @@ local_resource(
 
 # Configure resource dependencies
 k8s_resource(
-    'kausality',
+    'kausality-webhook',
     resource_deps=['create-namespace'],
     port_forwards=['8081:8081'],  # health endpoint
     labels=['webhook'],
@@ -70,6 +70,6 @@ k8s_resource(
 
 k8s_resource(
     'kausality-backend',
-    resource_deps=['create-namespace', 'kausality'],
+    resource_deps=['create-namespace', 'kausality-webhook'],
     labels=['backend'],
 )

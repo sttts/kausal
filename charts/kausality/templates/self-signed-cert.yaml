@@ -23,7 +23,7 @@ kind: Secret
 metadata:
   name: {{ $secretName }}
   labels:
-    {{- include "kausality.labels" . | nindent 4 }}
+    {{- include "kausality.webhookLabels" . | nindent 4 }}
 type: kubernetes.io/tls
 data:
   tls.crt: {{ $cert }}
@@ -37,7 +37,7 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: {{ include "kausality.fullname" . }}
   labels:
-    {{- include "kausality.labels" . | nindent 4 }}
+    {{- include "kausality.webhookLabels" . | nindent 4 }}
 webhooks:
   - name: mutating.webhook.kausality.io
     admissionReviewVersions: ["v1"]

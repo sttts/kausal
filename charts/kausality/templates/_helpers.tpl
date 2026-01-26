@@ -41,11 +41,32 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
-Selector labels
+Selector labels (generic)
 */}}
 {{- define "kausality.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "kausality.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Webhook labels
+*/}}
+{{- define "kausality.webhookLabels" -}}
+helm.sh/chart: {{ include "kausality.chart" . }}
+{{ include "kausality.webhookSelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Webhook selector labels
+*/}}
+{{- define "kausality.webhookSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kausality.name" . }}-webhook
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: webhook
 {{- end }}
 
 {{/*

@@ -3,7 +3,7 @@ kind: Service
 metadata:
   name: {{ include "kausality.webhookServiceName" . }}
   labels:
-    {{- include "kausality.labels" . | nindent 4 }}
+    {{- include "kausality.webhookLabels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -12,4 +12,4 @@ spec:
       protocol: TCP
       name: https
   selector:
-    {{- include "kausality.selectorLabels" . | nindent 4 }}
+    {{- include "kausality.webhookSelectorLabels" . | nindent 4 }}

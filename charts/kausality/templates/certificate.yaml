@@ -4,7 +4,7 @@ kind: Certificate
 metadata:
   name: {{ include "kausality.certificateSecretName" . }}
   labels:
-    {{- include "kausality.labels" . | nindent 4 }}
+    {{- include "kausality.webhookLabels" . | nindent 4 }}
 spec:
   secretName: {{ include "kausality.certificateSecretName" . }}
   dnsNames:

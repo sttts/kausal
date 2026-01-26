@@ -6,7 +6,7 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: {{ include "kausality.fullname" . }}
   labels:
-    {{- include "kausality.labels" . | nindent 4 }}
+    {{- include "kausality.webhookLabels" . | nindent 4 }}
   {{- if .Values.certificates.certManager.enabled }}
   annotations:
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "kausality.certificateSecretName" . }}
