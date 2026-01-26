@@ -42,6 +42,8 @@ The system had no concept of *why* the cluster looked the way it did — only wh
 
 This story is about Terraform, but the same applies to Crossplane, Pulumi, or any declarative IaC tool. It's a foundational problem: **declarative systems converge to declared state, not intended state.** And we all want these systems to work without a human in the loop.
 
+The downstream IaC system applies blindly. It doesn't know about intent — it applies what is declared. If the latter changes although it was intended as a no-op, disaster hits your fleet. Automated. Fast. Disastrous.
+
 This is the class of failure Kausality is built to prevent.
 
 **Kausality captures causality, ownership, and intent:**
