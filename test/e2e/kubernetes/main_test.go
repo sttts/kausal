@@ -11,9 +11,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	kausalityv1alpha1 "github.com/kausality-io/kausality/api/v1alpha1"
 )
 
 const (
@@ -24,8 +28,9 @@ const (
 )
 
 var (
-	clientset     *kubernetes.Clientset
-	testNamespace string
+	clientset       *kubernetes.Clientset
+	kausalityClient client.Client
+	testNamespace   string
 )
 
 func TestMain(m *testing.M) {
@@ -43,6 +48,17 @@ func TestMain(m *testing.M) {
 	clientset, err = kubernetes.NewForConfig(config)
 	if err != nil {
 		fmt.Printf("Failed to create clientset: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create controller-runtime client for Kausality CRDs
+	scheme := runtime.NewScheme()
+	_ = kausalityv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	kausalityClient, err = client.New(config, client.Options{Scheme: scheme})
+	if err != nil {
+		fmt.Printf("Failed to create kausality client: %v\n", err)
 		os.Exit(1)
 	}
 

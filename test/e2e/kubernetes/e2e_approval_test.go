@@ -843,6 +843,9 @@ func TestFreezeBlocksAllMutations(t *testing.T) {
 	assert.Contains(t, dep.Annotations, approval.ApprovalsAnnotation, "approval should still be present")
 	assert.Equal(t, "true", dep.Annotations["kausality.io/freeze"], "freeze should be set")
 
+	// Wait for webhook's cache to see the updated annotation
+	time.Sleep(2 * time.Second)
+
 	// Step 7: Verify freeze blocks ALL mutations (including user modifications)
 	t.Log("")
 	t.Log("Step 7: Attempting to modify ReplicaSet - freeze should block ALL mutations...")
