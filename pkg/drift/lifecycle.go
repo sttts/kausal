@@ -57,7 +57,21 @@ func (d *LifecycleDetector) checkInitialized(state *ParentState, detector Initia
 	case DetectByReadyCondition:
 		return hasCondition(state.Conditions, ConditionTypeReady, metav1.ConditionTrue)
 	case DetectByObservedGeneration:
-		return state.HasObservedGeneration
+		// For observedGeneration to indicate "initialized", we need:
+		// 1. HasObservedGeneration (gen == obsGen from condition)
+		// 2. A "ready-like" condition is True (Ready, Available, or Initialized)
+		//
+		// We specifically do NOT use Synced=True alone because:
+		// - Crossplane sets Synced=True when it sends requests to create children
+		// - But Ready=False until children are actually ready
+		// - During child creation, the controller needs to update children
+		// - Those updates should be allowed until fully ready
+		if !state.HasObservedGeneration {
+			return false
+		}
+		return hasCondition(state.Conditions, ConditionTypeReady, metav1.ConditionTrue) ||
+			hasCondition(state.Conditions, ConditionTypeAvailable, metav1.ConditionTrue) ||
+			hasCondition(state.Conditions, ConditionTypeInitialized, metav1.ConditionTrue)
 	default:
 		return false
 	}

@@ -66,12 +66,69 @@ func TestLifecycleDetector_DetectPhase(t *testing.T) {
 			expect: PhaseInitialized,
 		},
 		{
-			name: "observedGeneration exists - ready",
+			name: "observedGeneration with Ready=True - ready",
 			state: &ParentState{
 				HasObservedGeneration: true,
 				ObservedGeneration:    1,
+				Conditions: []metav1.Condition{
+					{Type: "Ready", Status: metav1.ConditionTrue},
+				},
 			},
 			expect: PhaseInitialized,
+		},
+		{
+			name: "observedGeneration with Available=True - ready",
+			state: &ParentState{
+				HasObservedGeneration: true,
+				ObservedGeneration:    1,
+				Conditions: []metav1.Condition{
+					{Type: "Available", Status: metav1.ConditionTrue},
+				},
+			},
+			expect: PhaseInitialized,
+		},
+		{
+			name: "observedGeneration with Initialized=True condition - ready",
+			state: &ParentState{
+				HasObservedGeneration: true,
+				ObservedGeneration:    1,
+				Conditions: []metav1.Condition{
+					{Type: "Initialized", Status: metav1.ConditionTrue},
+				},
+			},
+			expect: PhaseInitialized,
+		},
+		{
+			name: "observedGeneration with Synced=True but Ready=False - initializing",
+			state: &ParentState{
+				HasObservedGeneration: true,
+				ObservedGeneration:    1,
+				Conditions: []metav1.Condition{
+					{Type: "Synced", Status: metav1.ConditionTrue},
+					{Type: "Ready", Status: metav1.ConditionFalse},
+				},
+			},
+			expect: PhaseInitializing,
+		},
+		{
+			name: "observedGeneration without healthy condition - initializing",
+			state: &ParentState{
+				HasObservedGeneration: true,
+				ObservedGeneration:    1,
+				// No Synced=True or Ready=True condition
+			},
+			expect: PhaseInitializing,
+		},
+		{
+			name: "observedGeneration with Synced=False - initializing",
+			state: &ParentState{
+				HasObservedGeneration: true,
+				ObservedGeneration:    1,
+				Conditions: []metav1.Condition{
+					{Type: "Synced", Status: metav1.ConditionFalse},
+				},
+			},
+			expect: PhaseInitializing,
 		},
 		{
 			name: "no initialization signals - initializing",
