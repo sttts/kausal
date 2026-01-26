@@ -10,6 +10,9 @@ certificates:
 backend:
   enabled: true
 
+backendTui:
+  enabled: true
+
 driftCallback:
   enabled: true
 
