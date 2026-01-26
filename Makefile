@@ -25,6 +25,14 @@ help: ## Display this help.
 
 ##@ Development
 
+.PHONY: manifests
+manifests: controller-gen ## Generate CRD manifests.
+	$(CONTROLLER_GEN) crd paths="./api/..." output:crd:artifacts:config=charts/kausality/crds
+
+.PHONY: generate
+generate: controller-gen ## Generate DeepCopy methods.
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -189,6 +197,7 @@ HELM ?= $(LOCALBIN)/helm
 SETUP_ENVTEST ?= $(LOCALBIN)/setup-envtest
 KO ?= $(LOCALBIN)/ko
 KIND ?= $(LOCALBIN)/kind
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 
 ## Tool Versions
 GOLANGCI_LINT_VERSION ?= v2.8.0
@@ -196,6 +205,7 @@ HELM_VERSION ?= v3.16.3
 ENVTEST_K8S_VERSION ?= 1.31.0
 KO_VERSION ?= v0.17.1
 KIND_VERSION ?= v0.25.0
+CONTROLLER_TOOLS_VERSION ?= v0.17.2
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
@@ -232,6 +242,11 @@ $(KO): $(LOCALBIN)
 kind: $(KIND) ## Download kind locally if necessary.
 $(KIND): $(LOCALBIN)
 	@test -s $(KIND) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/kind@$(KIND_VERSION)
+
+.PHONY: controller-gen
+controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
+$(CONTROLLER_GEN): $(LOCALBIN)
+	@test -s $(CONTROLLER_GEN) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 
 .PHONY: clean
 clean: ## Clean up build artifacts.
