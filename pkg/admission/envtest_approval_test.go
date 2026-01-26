@@ -23,6 +23,7 @@ import (
 	"github.com/kausality-io/kausality/pkg/approval"
 	"github.com/kausality-io/kausality/pkg/config"
 	"github.com/kausality-io/kausality/pkg/controller"
+	ktesting "github.com/kausality-io/kausality/pkg/testing"
 )
 
 func TestApproval_ModeAlways(t *testing.T) {
@@ -545,26 +546,23 @@ func TestApprovalConsumed_ModeOnce(t *testing.T) {
 		t.Errorf("expected allowed=true with valid approval")
 	}
 
-	// Give a moment for the async update (if any)
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify approval was consumed (removed from parent)
-	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
-		t.Fatalf("failed to get deployment after handler: %v", err)
-	}
-	afterApprovals := deploy.GetAnnotations()[approval.ApprovalsAnnotation]
-	t.Logf("After handler - approvals: %s", afterApprovals)
-
-	// The approval should be removed (empty or missing)
-	if afterApprovals != "" {
-		// Parse and check if our approval is still there
+	// Wait for async approval consumption
+	ktesting.Eventually(t, func() (bool, string) {
+		if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+			return false, fmt.Sprintf("failed to get deployment: %v", err)
+		}
+		afterApprovals := deploy.GetAnnotations()[approval.ApprovalsAnnotation]
+		if afterApprovals == "" {
+			return true, "approval consumed"
+		}
 		remaining, _ := approval.ParseApprovals(afterApprovals)
 		for _, a := range remaining {
 			if a.Name == rs.Name && a.Mode == approval.ModeOnce {
-				t.Errorf("mode=once approval should have been consumed, but still exists: %v", remaining)
+				return false, fmt.Sprintf("mode=once approval still exists: %v", remaining)
 			}
 		}
-	}
+		return true, "approval consumed"
+	}, 5*time.Second, 50*time.Millisecond, "waiting for approval consumption")
 }
 
 // =============================================================================
@@ -666,9 +664,10 @@ func TestApprovalNotConsumed_ModeAlways(t *testing.T) {
 		t.Errorf("expected allowed=true with valid approval")
 	}
 
+	// Brief wait then verify approval was NOT consumed (mode=always should persist)
+	// This is a "prove nothing happens" case - wait, then verify state unchanged
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify approval was NOT consumed (mode=always should persist)
 	if err := k8sClientUnit.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
 		t.Fatalf("failed to get deployment after handler: %v", err)
 	}

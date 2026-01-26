@@ -426,7 +426,19 @@ Never commit test changes without running them first.
 
 ### Test Timing Rules
 
-1. **Never use `time.Sleep` in tests** - Use polling/waiting functions instead. The only exception is to prove something does NOT happen (wait then verify state unchanged).
+1. **Never use `time.Sleep` in tests** - Use `ktesting.Eventually` for waiting on conditions:
+   ```go
+   ktesting.Eventually(t, func() (bool, string) {
+       // Check condition and return descriptive reason
+       if count.Load() != expected {
+           return false, fmt.Sprintf("count=%d, want %d", count.Load(), expected)
+       }
+       return true, "count matches"
+   }, 30*time.Second, 100*time.Millisecond, "waiting for count")
+   ```
+   **Exceptions:**
+   - Inside test server handlers to simulate slow responses (not test code waiting)
+   - To prove something does NOT happen (sleep, then verify state unchanged)
 2. **30 seconds is a good upper bound** for waiting in integration or E2E tests.
 3. **100ms is a good poll interval** for eventually-style assertions.
 4. **Always use `retry.RetryOnConflict`** around resource update operations - Kubernetes updates can fail with conflicts due to concurrent modifications.

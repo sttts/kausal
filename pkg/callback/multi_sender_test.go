@@ -3,6 +3,7 @@ package callback
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kausality-io/kausality/pkg/callback/v1alpha1"
+	ktesting "github.com/kausality-io/kausality/pkg/testing"
 )
 
 func TestNewMultiSender_EmptyConfigs(t *testing.T) {
@@ -152,13 +154,18 @@ func TestMultiSender_MarkResolved(t *testing.T) {
 
 	// Send first report
 	ms.SendAsync(context.Background(), report)
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, int32(1), counts[0].Load())
-	assert.Equal(t, int32(1), counts[1].Load())
+	ktesting.Eventually(t, func() (bool, string) {
+		c0, c1 := counts[0].Load(), counts[1].Load()
+		if c0 != 1 || c1 != 1 {
+			return false, fmt.Sprintf("counts=[%d,%d], want [1,1]", c0, c1)
+		}
+		return true, "both received"
+	}, 5*time.Second, 10*time.Millisecond, "waiting for first send")
 
-	// Send again - should be deduplicated on both
+	// Send again - should be deduplicated on both (counts stay at 1)
 	ms.SendAsync(context.Background(), report)
-	time.Sleep(100 * time.Millisecond)
+	// Brief wait then verify no change (deduplication)
+	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, int32(1), counts[0].Load())
 	assert.Equal(t, int32(1), counts[1].Load())
 
@@ -167,9 +174,13 @@ func TestMultiSender_MarkResolved(t *testing.T) {
 
 	// Now it can be sent again
 	ms.SendAsync(context.Background(), report)
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, int32(2), counts[0].Load())
-	assert.Equal(t, int32(2), counts[1].Load())
+	ktesting.Eventually(t, func() (bool, string) {
+		c0, c1 := counts[0].Load(), counts[1].Load()
+		if c0 != 2 || c1 != 2 {
+			return false, fmt.Sprintf("counts=[%d,%d], want [2,2]", c0, c1)
+		}
+		return true, "both received again"
+	}, 5*time.Second, 10*time.Millisecond, "waiting for resend")
 }
 
 func TestMultiSender_IndependentDeduplication(t *testing.T) {
@@ -204,13 +215,18 @@ func TestMultiSender_IndependentDeduplication(t *testing.T) {
 
 	// Send once - both should receive
 	ms.SendAsync(context.Background(), report)
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, int32(1), counts[0].Load())
-	assert.Equal(t, int32(1), counts[1].Load())
+	ktesting.Eventually(t, func() (bool, string) {
+		c0, c1 := counts[0].Load(), counts[1].Load()
+		if c0 != 1 || c1 != 1 {
+			return false, fmt.Sprintf("counts=[%d,%d], want [1,1]", c0, c1)
+		}
+		return true, "both received"
+	}, 5*time.Second, 10*time.Millisecond, "waiting for first send")
 
 	// Send again - neither should receive (independent dedup)
 	ms.SendAsync(context.Background(), report)
-	time.Sleep(100 * time.Millisecond)
+	// Brief wait then verify no change (deduplication)
+	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, int32(1), counts[0].Load())
 	assert.Equal(t, int32(1), counts[1].Load())
 }
@@ -276,11 +292,17 @@ func TestMultiSender_ReportWithNewObject(t *testing.T) {
 	}
 
 	ms.SendAsync(context.Background(), report)
-	time.Sleep(100 * time.Millisecond)
+	ktesting.Eventually(t, func() (bool, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(receivedReports) != 1 {
+			return false, fmt.Sprintf("received %d reports, want 1", len(receivedReports))
+		}
+		return true, "report received"
+	}, 5*time.Second, 10*time.Millisecond, "waiting for report")
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, receivedReports, 1)
 	assert.Equal(t, "with-new-object", receivedReports[0].Spec.ID)
 }
 

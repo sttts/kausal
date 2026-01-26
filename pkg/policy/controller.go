@@ -162,7 +162,7 @@ func (c *Controller) reconcileWebhook(ctx context.Context, log logr.Logger) erro
 	}
 
 	// Aggregate rules from all policies
-	rules, err := c.aggregateRules(ctx, policies.Items)
+	rules, err := c.aggregateRules(policies.Items)
 	if err != nil {
 		return fmt.Errorf("failed to aggregate rules: %w", err)
 	}
@@ -193,7 +193,7 @@ func (c *Controller) reconcileWebhook(ctx context.Context, log logr.Logger) erro
 }
 
 // aggregateRules builds webhook rules from all Kausality policies.
-func (c *Controller) aggregateRules(ctx context.Context, policies []kausalityv1alpha1.Kausality) ([]admissionregistrationv1.RuleWithOperations, error) {
+func (c *Controller) aggregateRules(policies []kausalityv1alpha1.Kausality) ([]admissionregistrationv1.RuleWithOperations, error) {
 	// Collect all resource rules, deduplicating by apiGroup+resource
 	type resourceKey struct {
 		apiGroup string
@@ -425,7 +425,7 @@ func (c *Controller) reconcileClusterRole(ctx context.Context, log logr.Logger, 
 	roleName := ClusterRolePrefix + policy.Name
 
 	// Build RBAC rules from policy resources
-	rules, err := c.buildRBACRules(ctx, policy)
+	rules, err := c.buildRBACRules(policy)
 	if err != nil {
 		return fmt.Errorf("failed to build RBAC rules: %w", err)
 	}
@@ -477,7 +477,7 @@ func (c *Controller) reconcileClusterRole(ctx context.Context, log logr.Logger, 
 }
 
 // buildRBACRules builds RBAC PolicyRules from a Kausality policy.
-func (c *Controller) buildRBACRules(ctx context.Context, policy *kausalityv1alpha1.Kausality) ([]rbacv1.PolicyRule, error) {
+func (c *Controller) buildRBACRules(policy *kausalityv1alpha1.Kausality) ([]rbacv1.PolicyRule, error) {
 	// Collect resources by API group
 	groupedResources := make(map[string][]string)
 

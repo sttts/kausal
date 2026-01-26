@@ -3,7 +3,6 @@ package policy
 import (
 	"context"
 	"sort"
-	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -345,11 +344,4 @@ func (s *Store) overrideMatches(override kausalityv1alpha1.ModeOverride, ctx Res
 // isValidMode checks if a mode string is valid.
 func isValidMode(mode string) bool {
 	return mode == string(kausalityv1alpha1.ModeLog) || mode == string(kausalityv1alpha1.ModeEnforce)
-}
-
-// kindToResource converts a Kind to the conventional resource name.
-// e.g., "Deployment" -> "deployments", "ReplicaSet" -> "replicasets"
-func kindToResource(kind string) string {
-	// Simple lowercase + plural (works for most resources)
-	return strings.ToLower(kind) + "s"
 }

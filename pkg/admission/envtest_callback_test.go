@@ -29,6 +29,7 @@ import (
 	"github.com/kausality-io/kausality/pkg/callback/v1alpha1"
 	"github.com/kausality-io/kausality/pkg/config"
 	"github.com/kausality-io/kausality/pkg/controller"
+	ktesting "github.com/kausality-io/kausality/pkg/testing"
 )
 
 func TestCallback_DriftReportSentOnDetection(t *testing.T) {
@@ -151,16 +152,17 @@ func TestCallback_DriftReportSentOnDetection(t *testing.T) {
 	}
 
 	// Wait for async callback to complete
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify drift report was sent
-	if callCount.Load() == 0 {
-		t.Errorf("expected drift report to be sent, but no calls received")
-	}
-
-	if len(receivedReports) == 0 {
-		t.Fatalf("expected to receive drift report")
-	}
+	ktesting.Eventually(t, func() (bool, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if callCount.Load() == 0 {
+			return false, "no callbacks received yet"
+		}
+		if len(receivedReports) == 0 {
+			return false, "no reports received yet"
+		}
+		return true, "callback received"
+	}, 5*time.Second, 50*time.Millisecond, "waiting for drift callback")
 
 	report := receivedReports[0]
 	t.Logf("Received drift report: phase=%s, id=%s", report.Spec.Phase, report.Spec.ID)
@@ -319,17 +321,20 @@ func TestCallback_ResolvedSentOnApproval(t *testing.T) {
 	}
 
 	// Wait for async callback to complete
-	time.Sleep(200 * time.Millisecond)
+	ktesting.Eventually(t, func() (bool, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(receivedReports) == 0 {
+			return false, "no reports received yet"
+		}
+		return true, "callback received"
+	}, 5*time.Second, 50*time.Millisecond, "waiting for resolved callback")
 
 	// Verify resolved report was sent
 	mu.Lock()
 	reports := make([]*v1alpha1.DriftReport, len(receivedReports))
 	copy(reports, receivedReports)
 	mu.Unlock()
-
-	if len(reports) == 0 {
-		t.Fatalf("expected to receive drift report")
-	}
 
 	// Should receive a Resolved report (since approval was found)
 	var foundResolved bool

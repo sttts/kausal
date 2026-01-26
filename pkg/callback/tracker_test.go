@@ -1,11 +1,14 @@
 package callback
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	ktesting "github.com/kausality-io/kausality/pkg/testing"
 )
 
 func TestTracker_Track(t *testing.T) {
@@ -181,10 +184,12 @@ func TestTracker_StartCleanupLoop(t *testing.T) {
 	// Advance time past TTL
 	setNow(now.Add(20 * time.Millisecond))
 
-	// Wait for cleanup to run
-	time.Sleep(15 * time.Millisecond)
-
-	// Manual cleanup to verify (the loop should have cleaned it)
-	tracker.Cleanup()
-	assert.Equal(t, 0, tracker.Size())
+	// Wait for cleanup loop to clean up
+	ktesting.Eventually(t, func() (bool, string) {
+		size := tracker.Size()
+		if size != 0 {
+			return false, fmt.Sprintf("size=%d, waiting for 0", size)
+		}
+		return true, "cleanup complete"
+	}, 1*time.Second, 5*time.Millisecond, "waiting for cleanup loop")
 }
