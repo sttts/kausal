@@ -304,6 +304,22 @@ helm install kausality ./charts/kausality \
   --set backend.enabled=true  # Enable drift logging
 ```
 
+### As a Library (Generic Control Plane)
+
+Kausality can be embedded directly into custom apiservers built with `k8s.io/apiserver`:
+
+```go
+import "github.com/kausality-io/kausality/pkg/admission"
+
+handler := admission.NewHandler(admission.Config{
+    Client:         client,
+    Log:            logger,
+    PolicyResolver: policy.NewStaticResolver(kausalityv1alpha1.ModeEnforce),
+})
+```
+
+See [`cmd/example-generic-control-plane/`](cmd/example-generic-control-plane/) for a complete working example with embedded etcd.
+
 ### With cert-manager
 
 ```bash

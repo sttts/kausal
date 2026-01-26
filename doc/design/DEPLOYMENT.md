@@ -42,6 +42,8 @@ server.RegisterAdmission(admissionHandler)
 - No network latency, no webhook overhead
 - Resource targeting is handled by which admission plugins are registered for which resources
 
+**Working Example:** See [`cmd/example-generic-control-plane/`](../../cmd/example-generic-control-plane/) for a complete implementation with embedded etcd and custom API types (Widget, WidgetSet).
+
 ## Webhook Server (Stock Kubernetes)
 
 ```go
