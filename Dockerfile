@@ -8,6 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
+COPY api/ api/
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 
