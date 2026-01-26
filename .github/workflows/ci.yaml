@@ -25,6 +25,11 @@ jobs:
       - name: Build
         run: go build -v ./...
 
+      - name: Build example-generic-control-plane
+        run: |
+          cd cmd/example-generic-control-plane
+          go build -v ./...
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -39,6 +44,11 @@ jobs:
 
       - name: Test
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Test example-generic-control-plane
+        run: |
+          cd cmd/example-generic-control-plane
+          go test -v -race ./...
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4

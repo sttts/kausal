@@ -29,28 +29,19 @@ import (
 	"github.com/kcp-dev/embeddedetcd/options"
 	genericoptions "k8s.io/apiserver/pkg/server/options"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-
 	kausalityv1alpha1 "github.com/kausality-io/kausality/api/v1alpha1"
+	"github.com/kausality-io/kausality/cmd/example-generic-control-plane/pkg/apiserver"
 	"github.com/kausality-io/kausality/pkg/policy"
 )
 
-var (
-	scheme = runtime.NewScheme()
-)
-
-func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(kausalityv1alpha1.AddToScheme(scheme))
-}
-
 func main() {
 	var dataDir string
+	var bindAddress string
+	var bindPort int
 
 	flag.StringVar(&dataDir, "data-dir", "/tmp/example-control-plane", "Data directory for etcd and server state")
+	flag.StringVar(&bindAddress, "bind-address", "127.0.0.1", "Address to bind the API server")
+	flag.IntVar(&bindPort, "bind-port", 8443, "Port to bind the API server")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -60,6 +51,8 @@ func main() {
 
 	log.Info("starting example-generic-control-plane",
 		"dataDir", dataDir,
+		"bindAddress", bindAddress,
+		"bindPort", bindPort,
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -70,13 +63,13 @@ func main() {
 	log.Info("policy resolver created", "mode", kausalityv1alpha1.ModeEnforce)
 
 	// Start server with embedded etcd
-	if err := run(ctx, log, dataDir, policyResolver); err != nil {
+	if err := run(ctx, log, dataDir, bindAddress, bindPort, policyResolver); err != nil {
 		log.Error(err, "server failed")
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, log logr.Logger, dataDir string, policyResolver policy.Resolver) error {
+func run(ctx context.Context, log logr.Logger, dataDir, bindAddress string, bindPort int, policyResolver policy.Resolver) error {
 	log.Info("starting embedded etcd server")
 
 	// Create embedded etcd options with root directory
@@ -84,7 +77,6 @@ func run(ctx context.Context, log logr.Logger, dataDir string, policyResolver po
 	etcdOpts.Enabled = true
 
 	// Create standard EtcdOptions for completion
-	// In a real apiserver, these come from the apiserver's configuration
 	genericEtcdOpts := genericoptions.NewEtcdOptions(nil)
 	genericEtcdOpts.StorageConfig.Transport.ServerList = []string{"embedded"}
 
@@ -98,7 +90,8 @@ func run(ctx context.Context, log logr.Logger, dataDir string, policyResolver po
 	}
 
 	// Start etcd server
-	etcdServer := embeddedetcd.NewServer(etcdConfig.Complete())
+	completedConfig := etcdConfig.Complete()
+	etcdServer := embeddedetcd.NewServer(completedConfig)
 	if etcdServer == nil {
 		return fmt.Errorf("failed to create etcd server")
 	}
@@ -128,43 +121,45 @@ func run(ctx context.Context, log logr.Logger, dataDir string, policyResolver po
 
 	log.Info("embedded etcd started successfully")
 
-	// Demonstrate kausality policy resolution
-	demoContext := policy.ResourceContext{
-		GVR:       schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
-		Namespace: "default",
-	}
-	mode := policyResolver.ResolveMode(demoContext, nil, nil)
-	log.Info("kausality policy resolution demo",
-		"resource", "apps/v1/deployments",
-		"namespace", "default",
-		"resolvedMode", mode,
-	)
+	// Embedded etcd listens on localhost:2379 by default
+	etcdServers := []string{"http://localhost:2379"}
+	log.Info("etcd endpoints", "endpoints", etcdServers)
 
-	// In a full implementation, the admission handler would be wired into
-	// the apiserver's admission chain like this:
-	//
-	// admissionHandler := admission.NewHandler(admission.Config{
-	//     Client:         client,
-	//     Log:            log,
-	//     PolicyResolver: policyResolver,
-	// })
-	//
-	// Then register it in the admission chain:
-	// genericConfig.AdmissionControl = admissionHandler
-	//
-	// The admission handler intercepts all mutations and:
-	// 1. Records controller identity (via user hash tracking)
-	// 2. Detects drift (controller changing child when parent is stable)
-	// 3. Propagates causal traces
-	// 4. Enforces or logs based on policy
+	// Create and start the API server
+	server, err := apiserver.New(apiserver.Config{
+		EtcdServers:    etcdServers,
+		BindAddress:    bindAddress,
+		BindPort:       bindPort,
+		Log:            log,
+		PolicyResolver: policyResolver,
+		Client:         nil, // No client needed for simple example
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create API server: %w", err)
+	}
+
+	log.Info("API server created, starting...")
+
+	// Run API server in background
+	apiDone := make(chan error, 1)
+	go func() {
+		apiDone <- server.Run(ctx)
+	}()
 
 	log.Info("example server running",
-		"note", "In a full implementation, this would serve the API with kausality admission",
+		"address", fmt.Sprintf("https://%s:%d", bindAddress, bindPort),
+		"apis", "example.kausality.io/v1alpha1",
 	)
 
-	// Block until context is done
-	<-ctx.Done()
-	log.Info("shutting down")
+	// Wait for shutdown
+	select {
+	case <-ctx.Done():
+		log.Info("shutting down")
+	case err := <-apiDone:
+		if err != nil {
+			log.Error(err, "API server error")
+		}
+	}
 
 	// Wait for etcd to shut down
 	select {

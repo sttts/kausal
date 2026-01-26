@@ -41,10 +41,12 @@ vet: ## Run go vet against code.
 .PHONY: test
 test: fmt vet ## Run tests.
 	go test ./... -coverprofile cover.out
+	cd cmd/example-generic-control-plane && go test ./...
 
 .PHONY: test-verbose
 test-verbose: fmt vet ## Run tests with verbose output.
 	go test ./... -v
+	cd cmd/example-generic-control-plane && go test ./... -v
 
 .PHONY: envtest
 envtest: setup-envtest ## Run envtest integration tests.
