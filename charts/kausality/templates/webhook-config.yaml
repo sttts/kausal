@@ -1,0 +1,15 @@
+{{- if .Values.backend.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kausality.webhookFullname" . }}-config
+  labels:
+    {{- include "kausality.webhookLabels" . | nindent 4 }}
+data:
+  config.yaml: |
+    backends:
+      - url: {{ include "kausality.backendServiceURL" . }}
+        timeout: 10s
+        retryCount: 3
+        retryInterval: 1s
+{{- end }}

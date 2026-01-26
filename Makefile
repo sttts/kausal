@@ -138,7 +138,6 @@ install-e2e: helm ## Install kausality for E2E tests. Requires WEBHOOK_IMAGE, CO
 		--set backend.image.repository="$${BACKEND_IMAGE%:*}" \
 		--set backend.image.tag="$${BACKEND_IMAGE##*:}" \
 		--set backend.image.pullPolicy=Never \
-		--set driftCallback.enabled=true \
 		--set certificates.selfSigned.enabled=true \
 		--set logging.development=true \
 		--wait --timeout 180s
@@ -165,7 +164,6 @@ install-e2e-crossplane: helm ## Install kausality for Crossplane E2E tests. Requ
 		--set backend.image.repository="$${BACKEND_IMAGE%:*}" \
 		--set backend.image.tag="$${BACKEND_IMAGE##*:}" \
 		--set backend.image.pullPolicy=Never \
-		--set driftCallback.enabled=true \
 		--set certificates.selfSigned.enabled=true \
 		--set logging.development=true \
 		--wait --timeout 300s

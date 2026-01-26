@@ -13,9 +13,6 @@ backend:
 backendTui:
   enabled: true
 
-driftCallback:
-  enabled: true
-
 # Exclude kausality-system from drift detection
 excludeNamespaces:
   - kube-system

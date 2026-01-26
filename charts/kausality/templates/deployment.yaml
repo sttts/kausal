@@ -40,6 +40,9 @@ spec:
             - --port={{ .Values.webhook.port }}
             - --cert-dir=/etc/webhook/certs
             - --health-probe-bind-address={{ .Values.webhook.healthProbeBindAddress }}
+            {{- if .Values.backend.enabled }}
+            - --config=/etc/webhook/config/config.yaml
+            {{- end }}
             {{- if .Values.logging.development }}
             - --zap-devel=true
             {{- end }}
@@ -68,6 +71,11 @@ spec:
             - name: cert
               mountPath: /etc/webhook/certs
               readOnly: true
+            {{- if .Values.backend.enabled }}
+            - name: config
+              mountPath: /etc/webhook/config
+              readOnly: true
+            {{- end }}
             {{- range $i, $cb := .Values.driftCallbacks }}
             {{- if or $cb.ca.cert $cb.ca.existingSecret }}
             - name: callback-ca-{{ $cb.url | sha256sum | trunc 8 }}
@@ -79,6 +87,11 @@ spec:
         - name: cert
           secret:
             secretName: {{ include "kausality.certificateSecretName" . }}
+        {{- if .Values.backend.enabled }}
+        - name: config
+          configMap:
+            name: {{ include "kausality.webhookFullname" . }}-config
+        {{- end }}
         {{- range $i, $cb := .Values.driftCallbacks }}
         {{- if $cb.ca.cert }}
         - name: callback-ca-{{ $cb.url | sha256sum | trunc 8 }}
