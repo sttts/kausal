@@ -67,24 +67,25 @@ func TestTwoLevelCompositionDrift(t *testing.T) {
 
 		_ = dynamicClient.Resource(compositionGVR).Delete(ctx, "xplatform-composition-"+suffix, metav1.DeleteOptions{})
 		_ = dynamicClient.Resource(compositionGVR).Delete(ctx, "xservice-composition-"+suffix, metav1.DeleteOptions{})
-		_ = dynamicClient.Resource(xrdGVR).Delete(ctx, "xplatforms.test.kausality.io", metav1.DeleteOptions{})
-		_ = dynamicClient.Resource(xrdGVR).Delete(ctx, "xservices.test.kausality.io", metav1.DeleteOptions{})
+		// Don't delete XRDs - they're shared between tests
 	}
 	t.Cleanup(cleanup)
 
-	// Step 1: Create XRDs
+	// Step 1: Ensure XRDs exist (may already exist from other tests)
 	t.Log("")
-	t.Log("Step 1: Creating CompositeResourceDefinitions (XRDs)...")
+	t.Log("Step 1: Ensuring XRDs exist...")
 
 	xserviceXRD := makeXServiceXRD()
 	_, err := dynamicClient.Resource(xrdGVR).Create(ctx, xserviceXRD, metav1.CreateOptions{})
-	require.NoError(t, err, "failed to create XService XRD")
-	t.Log("Created XService XRD")
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		require.NoError(t, err, "failed to create XService XRD")
+	}
 
 	xplatformXRD := makeXPlatformXRD()
 	_, err = dynamicClient.Resource(xrdGVR).Create(ctx, xplatformXRD, metav1.CreateOptions{})
-	require.NoError(t, err, "failed to create XPlatform XRD")
-	t.Log("Created XPlatform XRD")
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		require.NoError(t, err, "failed to create XPlatform XRD")
+	}
 
 	// Wait for XRDs to be established (CRDs created)
 	t.Log("Waiting for XRDs to be established...")

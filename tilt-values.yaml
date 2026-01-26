@@ -10,11 +10,16 @@ backend:
 driftCallback:
   enabled: true
 
-# Monitor deployments and replicasets for testing
+# Monitor deployments, replicasets, and Crossplane resources for testing
 resourceRules:
   include:
     - apiGroups: ["apps"]
       resources: ["deployments", "replicasets"]
+    # Crossplane resources for E2E tests
+    - apiGroups: ["nop.crossplane.io"]
+      resources: ["*"]
+    - apiGroups: ["test.kausality.io"]
+      resources: ["*"]
 
 # Exclude kausality-system from drift detection
 excludeNamespaces:
